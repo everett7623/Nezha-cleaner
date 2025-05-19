@@ -55,7 +55,7 @@ The script will perform the following steps to thoroughly clean up the Nezha Age
 
 ## 📷 效果展示 (Screenshots)
 
-![Script Execution](https://via.placeholder.com/800x400?text=Nezha+Cleaner+Screenshot)
+![image](https://github.com/user-attachments/assets/3a7db698-bc66-4bc3-9830-30e8341c5090)
 
 ## ⚠️ 注意事项 (Notes)
 
