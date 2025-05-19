@@ -26,6 +26,13 @@ This is a specialized tool for completely removing Nezha Agent from your system.
 ## 🚀 一键运行 (One-click Execution)
 
 ```bash
+bash <(wget -qO- https://raw.githubusercontent.com/everett7623/Nezha-cleaner/main/nezha-agent-cleaner.sh)
+
+```
+
+或者 (or)
+
+```bash
 bash <(curl -s https://raw.githubusercontent.com/everett7623/Nezha-cleaner/main/nezha-agent-cleaner.sh)
 ```
 
@@ -54,8 +61,7 @@ The script will perform the following steps to thoroughly clean up the Nezha Age
 10. **最终验证** - 确认所有内容已被清理
 
 ## 📷 效果展示 (Screenshots)
-
-![image](https://github.com/user-attachments/assets/3a7db698-bc66-4bc3-9830-30e8341c5090)
+![2025-05-19_105200](https://github.com/user-attachments/assets/8a649890-bdaa-4a41-a38f-b304053c67d7)
 
 ## ⚠️ 注意事项 (Notes)
 
