@@ -26,14 +26,13 @@ This is a specialized tool for completely removing Nezha Agent from your system.
 ## 🚀 一键运行 (One-click Execution)
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/everett7623/Nezha-cleaner/main/nezha-agent-cleaner.sh)
-
+bash <(curl -s https://raw.githubusercontent.com/everett7623/Nezha-cleaner/main/nezha-agent-cleaner.sh)
 ```
 
 或者 (or)
-
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/everett7623/Nezha-cleaner/main/nezha-agent-cleaner.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/everett7623/Nezha-cleaner/main/nezha-agent-cleaner.sh)
+
 ```
 
 或者 (or)
