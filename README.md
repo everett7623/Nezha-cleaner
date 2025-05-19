@@ -1,8 +1,12 @@
 # 哪吒探针Agent彻底清理工具 (Nezha Agent Complete Removal Tool)
 
+![Static Badge](https://img.shields.io/badge/https%3A%2F%2Fgithub.com%2Feverett7623%2FNezha-cleaner%2F)
+
 [![License](https://img.shields.io/github/license/everett7623/nezha-agent-cleaner?color=blue)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/everett7623/nezha-agent-cleaner?style=social)](https://github.com/everett7623/nezha-agent-cleaner/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/everett7623e/nezha-agent-cleaner?style=social)](https://github.com/everett7623/nezha-agent-cleaner/network/members)
+
+
 
 <p align="center">
     <img src="https://img.shields.io/badge/Language-Bash-blue?style=for-the-badge&logo=gnubash" alt="Language">
