@@ -1,8 +1,18 @@
 #!/bin/bash
 
-# 哪吒探针Agent彻底清理脚本
-# Nezha Agent Complete Removal Script
-# https://github.com/your-username/nezha-agent-cleaner
+# ==============================================================================
+#                          Nezha Agent Cleanup Tool
+#
+#      Project: https://github.com/your-username/nezha-agent-cleaner
+#      Author: [Your Name/Handle]
+#      Version: 1.1 (Security Patch)
+#
+#      Description: A safe utility to completely remove Nezha Agent, systemd 
+#                   services, cron jobs, and Docker containers.
+#      
+#      Safety Note: Fixed critical bug in v1.0 that caused accidental deletion 
+#                   of other agents (1Panel, Tailscale, etc). Step 7 is now safe.
+# ==============================================================================
 
 # 设置颜色
 RED='\033[0;31m'
@@ -11,10 +21,10 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# 打印横幅
+# 打印运行时的欢迎横幅
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${GREEN}           哪吒探针Agent彻底清理脚本 v1.0                      ${NC}"
-echo -e "${GREEN}           Nezha Agent Complete Removal Tool                    ${NC}"
+echo -e "${GREEN}           哪吒探针Agent彻底清理脚本 v1.1 (修复版)             ${NC}"
+echo -e "${GREEN}           Nezha Agent Complete Removal Tool (Fixed)            ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # 检查是否为root用户
@@ -40,10 +50,10 @@ else
     echo -e "${GREEN}No Nezha Agent processes found${NC}"
 fi
 
-# 步骤2: 检查定时任务
+# 步骤2: 检查定时任务（精确匹配nezha-agent）
 echo -e "\n${BLUE}[步骤2] 检查相关定时任务...${NC}"
 echo -e "${BLUE}[Step2] Checking related cron jobs...${NC}"
-cron_result=$(crontab -l 2>/dev/null | grep -E "nezha|agent" || echo "No crontab found")
+cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-agent|/nezha/" || echo "No crontab found")
 if [ "$cron_result" != "No crontab found" ]; then
     echo -e "${YELLOW}发现相关定时任务:${NC}"
     echo -e "${YELLOW}Found related cron jobs:${NC}"
@@ -51,7 +61,7 @@ if [ "$cron_result" != "No crontab found" ]; then
     
     echo -e "${YELLOW}正在移除相关定时任务...${NC}"
     echo -e "${YELLOW}Removing related cron jobs...${NC}"
-    crontab -l | grep -v -E "nezha|agent" | crontab -
+    crontab -l | grep -v -iE "nezha-agent|/nezha/" | crontab -
     echo -e "${GREEN}定时任务清理完成${NC}"
     echo -e "${GREEN}Cron jobs cleaned${NC}"
 else
@@ -59,10 +69,10 @@ else
     echo -e "${GREEN}No related cron jobs found${NC}"
 fi
 
-# 步骤3: 停止并禁用所有nezha-agent服务
+# 步骤3: 停止并禁用所有nezha-agent服务（精确匹配）
 echo -e "\n${BLUE}[步骤3] 停止并禁用所有哪吒探针服务...${NC}"
 echo -e "${BLUE}[Step3] Stopping and disabling all Nezha Agent services...${NC}"
-nezha_services=$(systemctl list-units --type=service | grep -E "nezha|agent" | awk '{print $1}')
+nezha_services=$(systemctl list-units --type=service --all | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
 if [ -n "$nezha_services" ]; then
     echo -e "${YELLOW}发现以下哪吒探针服务:${NC}"
     echo -e "${YELLOW}Found the following Nezha Agent services:${NC}"
@@ -88,6 +98,7 @@ if pgrep -f "nezha-agent" >/dev/null; then
     echo -e "${YELLOW}正在终止进程...${NC}"
     echo -e "${YELLOW}Terminating processes...${NC}"
     pkill -9 -f "nezha-agent"
+    sleep 1
     echo -e "${GREEN}进程已终止${NC}"
     echo -e "${GREEN}Processes terminated${NC}"
 else
@@ -95,10 +106,10 @@ else
     echo -e "${GREEN}No processes to terminate${NC}"
 fi
 
-# 步骤5: 删除所有服务文件
+# 步骤5: 删除所有服务文件（精确匹配）
 echo -e "\n${BLUE}[步骤5] 删除所有服务文件...${NC}"
 echo -e "${BLUE}[Step5] Removing all service files...${NC}"
-service_files=$(find /etc/systemd/system/ -name "*nezha*" -o -name "*agent*" 2>/dev/null)
+service_files=$(find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) 2>/dev/null)
 if [ -n "$service_files" ]; then
     echo -e "${YELLOW}发现以下服务文件:${NC}"
     echo -e "${YELLOW}Found the following service files:${NC}"
@@ -106,7 +117,7 @@ if [ -n "$service_files" ]; then
     
     echo -e "${YELLOW}删除服务文件...${NC}"
     echo -e "${YELLOW}Removing service files...${NC}"
-    find /etc/systemd/system/ -name "*nezha*" -o -name "*agent*" -exec rm -f {} \; 2>/dev/null
+    find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) -exec rm -f {} \; 2>/dev/null
     echo -e "${GREEN}服务文件已删除${NC}"
     echo -e "${GREEN}Service files removed${NC}"
 else
@@ -119,9 +130,8 @@ echo -e "\n${BLUE}[步骤6] 删除二进制文件和目录...${NC}"
 echo -e "${BLUE}[Step6] Removing binary files and directories...${NC}"
 directories=(
     "/opt/nezha"
-    "/opt/agent"
+    "/opt/nezha-agent"
     "/usr/local/nezha"
-    "/usr/local/agent"
 )
 
 binaries=(
@@ -156,8 +166,9 @@ echo -e "${YELLOW}Searching for Nezha Agent related files in the system...${NC}"
 # 创建临时文件保存查找结果
 temp_file=$(mktemp)
 
-# 搜索常见位置
-find /root /home /tmp /var/tmp /etc /usr/local -name "*nezha*" -o -name "*agent*" 2>/dev/null | grep -v -E "ssh|mail|package" > "$temp_file"
+# ⚠️ 修复：只搜索包含 "nezha" 的文件，去掉了危险的 "*agent*"
+# ⚠️ FIX: Only search for "*nezha*", removed the dangerous "*agent*"
+find /root /home /tmp /var/tmp /etc /usr/local -name "*nezha*" 2>/dev/null > "$temp_file"
 
 if [ -s "$temp_file" ]; then
     echo -e "${YELLOW}发现以下相关文件:${NC}"
@@ -169,9 +180,12 @@ if [ -s "$temp_file" ]; then
     read -r response
     if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
         while IFS= read -r file; do
-            echo -e "${YELLOW}删除: $file${NC}"
-            echo -e "${YELLOW}Removing: $file${NC}"
-            rm -rf "$file" 2>/dev/null
+            # 二次确认：确保文件路径里真的含有 nezha，防止意外
+            if [[ "$file" == *"nezha"* ]]; then
+                echo -e "${YELLOW}删除: $file${NC}"
+                echo -e "${YELLOW}Removing: $file${NC}"
+                rm -rf "$file" 2>/dev/null
+            fi
         done < "$temp_file"
         echo -e "${GREEN}文件已删除${NC}"
         echo -e "${GREEN}Files removed${NC}"
@@ -194,11 +208,11 @@ systemctl daemon-reload
 echo -e "${GREEN}systemd配置已重新加载${NC}"
 echo -e "${GREEN}systemd configuration reloaded${NC}"
 
-# 步骤9: 检查Docker容器
+# 步骤9: 检查Docker容器（精确匹配）
 echo -e "\n${BLUE}[步骤9] 检查相关Docker容器...${NC}"
 echo -e "${BLUE}[Step9] Checking related Docker containers...${NC}"
 if command -v docker &> /dev/null; then
-    nezha_containers=$(docker ps -a | grep -E "nezha|agent" || echo "No containers found")
+    nezha_containers=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" | grep -iE "nezha-agent|nezha:" || echo "No containers found")
     if [ "$nezha_containers" != "No containers found" ]; then
         echo -e "${YELLOW}发现以下相关Docker容器:${NC}"
         echo -e "${YELLOW}Found the following related Docker containers:${NC}"
@@ -208,7 +222,7 @@ if command -v docker &> /dev/null; then
         echo -e "${YELLOW}Would you like to stop and remove these containers? [y/N] ${NC}"
         read -r response
         if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            container_ids=$(docker ps -a | grep -E "nezha|agent" | awk '{print $1}')
+            container_ids=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" | grep -iE "nezha-agent|nezha:" | awk '{print $1}')
             for id in $container_ids; do
                 echo -e "${YELLOW}停止并删除容器: $id${NC}"
                 echo -e "${YELLOW}Stopping and removing container: $id${NC}"
@@ -240,19 +254,19 @@ if pgrep -f "nezha-agent" >/dev/null; then
     echo -e "${RED}Warning: Nezha Agent processes still detected!${NC}"
     ps aux | grep -E "[n]ezha-agent"
 else
-    echo -e "${GREEN}未检测到任何哪吒探针进程${NC}"
-    echo -e "${GREEN}No Nezha Agent processes detected${NC}"
+    echo -e "${GREEN}✓ 未检测到任何哪吒探针进程${NC}"
+    echo -e "${GREEN}✓ No Nezha Agent processes detected${NC}"
 fi
 
 # 检查是否还有任何服务
-nezha_services_remaining=$(systemctl list-units --type=service | grep -E "nezha|agent" | awk '{print $1}')
+nezha_services_remaining=$(systemctl list-units --type=service --all | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
 if [ -n "$nezha_services_remaining" ]; then
     echo -e "${RED}警告: 仍然检测到哪吒探针服务!${NC}"
     echo -e "${RED}Warning: Nezha Agent services still detected!${NC}"
     echo "$nezha_services_remaining"
 else
-    echo -e "${GREEN}未检测到任何哪吒探针服务${NC}"
-    echo -e "${GREEN}No Nezha Agent services detected${NC}"
+    echo -e "${GREEN}✓ 未检测到任何哪吒探针服务${NC}"
+    echo -e "${GREEN}✓ No Nezha Agent services detected${NC}"
 fi
 
 echo -e "\n${BLUE}=================================================================${NC}"
