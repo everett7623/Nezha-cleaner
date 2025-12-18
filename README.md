@@ -241,23 +241,39 @@ A: 支持所有使用systemd的Linux发行版，包括Ubuntu、Debian、CentOS�
 
 ---
 
+## 📊 项目统计 (Project Stats)
+
+![Alt](https://repobeats.axiom.co/api/embed/fabb0e3c29c6602a6bfd4ab173c320b2ef4dbcef.svg "Repobeats analytics image")
+
+---
+
 ## 📧 联系方式 (Contact)
 
-- GitHub: [@everett7623](https://github.com/everett7623)
-- Issues: [GitHub Issues](https://github.com/everett7623/Nezha-cleaner/issues)
+- 👨‍💻 GitHub: [@everett7623](https://github.com/everett7623)
+- 💬 Issues: [报告问题](https://github.com/everett7623/Nezha-cleaner/issues)
+
+---
+
+## 🙏 致谢 (Acknowledgments)
+
+感谢所有为本项目做出贡献的开发者！
+
+*Thanks to all contributors who have helped this project!*
+
+- [哪吒探针](https://github.com/naiba/nezha) - 优秀的服务器监控工具
+- 所有提交Issue和PR的贡献者
 
 ---
 
 <p align="center">
-    <b>感谢使用哪吒探针Agent清理工具！</b><br>
+    <b>🎉 感谢使用哪吒探针Agent清理工具！</b><br>
     <i>Thank you for using Nezha Agent Cleaner!</i>
 </p>
 
 <p align="center">
-    Made with ❤️ by <a href="https://github.com/everett7623">everett7623</a>
+    <sub>Made with ❤️ by <a href="https://github.com/everett7623">everett7623</a></sub>
 </p>
 
-## 🌟 支持项目 (Support the Project)
-
-如果您觉得这个项目有用，请考虑给它一个星标 ⭐ 
-If you find this project useful, please consider giving it a star ⭐
+<p align="center">
+    <a href="#top">⬆️ 回到顶部 (Back to Top)</a>
+</p>
