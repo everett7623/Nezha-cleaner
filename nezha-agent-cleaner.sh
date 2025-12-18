@@ -4,7 +4,7 @@
 #                          Nezha Agent Cleanup Tool
 #
 #      Project: https://github.com/your-username/nezha-agent-cleaner
-#      Author: [Your Name/Handle]
+#      Author: everett7623
 #      Version: 1.1 (Security Patch)
 #
 #      Description: A safe utility to completely remove Nezha Agent, systemd 
