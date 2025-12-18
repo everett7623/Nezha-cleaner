@@ -91,7 +91,7 @@ sudo ./nezha-agent-cleaner.sh
 
 ## 📷 效果展示 (Screenshots)
 
-![nezha-agent-cleanup-capture]([https://github.com/user-attachments/assets/8a649890-bdaa-4a41-a38f-b304053c67d7](https://img1.pixhost.to/images/10969/671885746_nezha-agent-cleanup-capture.png])
+![nezha-agent-cleanup-capture](https://img1.pixhost.to/images/10969/671885746_nezha-agent-cleanup-capture.png)
 
 ---
 
