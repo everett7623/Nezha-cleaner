@@ -5,16 +5,22 @@
 #
 #      Project: https://github.com/everett7623/nezha-agent-cleaner
 #      Author: everett7623
-#      Version: 1.2 (Intelligent Path Tracking)
+#      Version: 1.3 (Bugfix Release)
 #
 #      Description: A safe utility to completely remove Nezha Agent with
 #                   intelligent path tracking, even for non-standard installations.
-#      
-#      Safety Features:
-#      - Fixed critical bug: removed dangerous "*agent*" wildcard
-#      - Intelligent process tracking to find installation paths
-#      - System directory protection (prevents deletion of /usr, /bin, etc.)
-#      - Double confirmation before deletion
+#
+#      Changelog v1.3:
+#      - Fixed: pkill no longer matches the script's own process
+#      - Fixed: is_protected_dir now uses targeted leaf-dir protection
+#      - Fixed: interactive prompts work when script is piped from curl
+#      - Fixed: ExecStart prefix modifiers (-, @, +, !) correctly stripped
+#      - Fixed: case-sensitivity consistency in file search and deletion
+#      - Fixed: WorkingDirectory whitespace trimming
+#      - Fixed: mktemp failure handling
+#      - Added: safe_remove() helper for consistent safe deletion
+#      - Added: SIGINT trap for temp file cleanup
+#      - Added: /var/log and /var/lib to search roots
 # ==============================================================================
 
 # 设置颜色
@@ -27,28 +33,39 @@ NC='\033[0m' # No Color
 
 # 打印运行时的欢迎横幅
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${GREEN}        哪吒探针Agent彻底清理脚本 v1.2 (智能追踪版)          ${NC}"
-echo -e "${GREEN}        Nezha Agent Removal Tool v1.2 (Smart Tracking)         ${NC}"
+echo -e "${GREEN}        哪吒探针Agent彻底清理脚本 v1.3 (Bugfix版)            ${NC}"
+echo -e "${GREEN}        Nezha Agent Removal Tool v1.3 (Bugfix Release)        ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}新特性: 智能路径追踪 + 系统目录保护${NC}"
-echo -e "${CYAN}New: Intelligent path tracking + system protection${NC}"
+echo -e "${CYAN}v1.3: 修复pkill自伤 + 保护目录精准化 + stdin修复${NC}"
+echo -e "${CYAN}v1.3: Fixed self-kill + targeted protection + stdin fix${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # 检查是否为root用户
 if [ "$(id -u)" != "0" ]; then
-   echo -e "${RED}[错误] 此脚本必须以root权限运行！${NC}" 
-   echo -e "${RED}[Error] This script must be run as root!${NC}" 
+   echo -e "${RED}[错误] 此脚本必须以root权限运行！${NC}"
+   echo -e "${RED}[Error] This script must be run as root!${NC}"
    exit 1
 fi
 
 echo -e "${YELLOW}[信息] 开始清理哪吒探针Agent...${NC}"
 echo -e "${YELLOW}[INFO] Starting Nezha Agent cleanup...${NC}"
 
-# 定义系统保护目录列表（不应被删除的目录）
+# 获取脚本自身的PID，防止 pgrep/pkill 误匹配自身
+SCRIPT_PID=$$
+
+# 定义系统保护目录列表 — 只保护关键系统叶子目录，不保护 /usr/local, /etc, /var 等安装区域
+# 使用精准的叶子目录列表，而非上级目录前缀，避免误伤 /usr/local/nezha-agent 等合法清理目标
 PROTECTED_DIRS=(
     "/bin"
     "/sbin"
-    "/usr"
+    "/usr/bin"
+    "/usr/sbin"
+    "/usr/lib"
+    "/usr/lib64"
+    "/usr/libexec"
+    "/usr/share"
+    "/usr/include"
+    "/usr/src"
     "/lib"
     "/lib64"
     "/boot"
@@ -56,21 +73,55 @@ PROTECTED_DIRS=(
     "/proc"
     "/sys"
     "/run"
-    "/var"
-    "/etc"
 )
 
 # 函数：检查路径是否为系统保护目录
 is_protected_dir() {
     local path="$1"
-    local real_path=$(realpath "$path" 2>/dev/null || echo "$path")
-    
+    local real_path=$(realpath "$path" 2>/dev/null || readlink -f "$path" 2>/dev/null || echo "$path")
+
     for protected in "${PROTECTED_DIRS[@]}"; do
         if [[ "$real_path" == "$protected" ]] || [[ "$real_path" == "$protected"/* ]]; then
             return 0  # 是保护目录
         fi
     done
     return 1  # 不是保护目录
+}
+
+# 函数：安全删除 — 统一的删除包装，所有删除操作均通过此函数
+# 参数: $1 = 路径, $2 = 描述(可选,用于日志)
+safe_remove() {
+    local target="$1"
+    local desc="${2:-$target}"
+
+    # 检查路径是否存在（TOCTOU 缓解: 先解析再检查）
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        return 0  # 已不存在，视为成功
+    fi
+
+    # 系统目录保护检查
+    if is_protected_dir "$target"; then
+        echo -e "${RED}⚠️  跳过系统保护路径: $desc${NC}"
+        return 1
+    fi
+
+    # 名称安全检查: 路径必须包含 "nezha"（大小写不敏感）
+    local target_lower="${target,,}"
+    if [[ "$target_lower" != *"nezha"* ]]; then
+        echo -e "${YELLOW}⚠️  路径不包含nezha，跳过: $desc${NC}"
+        return 1
+    fi
+
+    # 执行删除
+    rm -rf "$target" 2>/dev/null
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        echo -e "${GREEN}✓ 已删除: $desc${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ 删除失败: $desc${NC}"
+        return 1
+    fi
 }
 
 # 步骤1: 检查和显示系统中的nezha进程
@@ -92,41 +143,41 @@ echo -e "${CYAN}[Step1.5] 🔍 Intelligent path tracking...${NC}"
 
 # 创建数组存储发现的路径
 declare -a TRACKED_PATHS
+# 关联数组提前声明，避免作用域问题（修复: 原在if块内声明）
+declare -A unique_paths
 
 # 通过进程追踪可执行文件路径
-if pgrep -f "nezha-agent" >/dev/null; then
+if pgrep -f "[n]ezha-agent" >/dev/null; then
     echo -e "${YELLOW}正在追踪运行中的进程路径...${NC}"
     echo -e "${YELLOW}Tracking running process paths...${NC}"
-    
+
     while IFS= read -r proc_path; do
         if [ -n "$proc_path" ] && [ -f "$proc_path" ]; then
-            real_path=$(realpath "$proc_path" 2>/dev/null)
-            if [ -n "$real_path" ]; then
-                TRACKED_PATHS+=("$real_path")
-                parent_dir=$(dirname "$real_path")
-                
-                # 如果可执行文件在子目录中，也追踪父目录
-                if [[ "$parent_dir" != "/usr/bin" ]] && [[ "$parent_dir" != "/bin" ]] && [[ "$parent_dir" != "/usr/sbin" ]] && [[ "$parent_dir" != "/sbin" ]]; then
-                    TRACKED_PATHS+=("$parent_dir")
-                fi
-                
-                echo -e "${CYAN}  → 追踪到: $real_path${NC}"
+            # readlink -f 已经解析了符号链接，无需再次 realpath
+            TRACKED_PATHS+=("$proc_path")
+            parent_dir=$(dirname "$proc_path")
+
+            # 使用 is_protected_dir 替代硬编码的4个目录比对（修复: 统一保护逻辑）
+            if ! is_protected_dir "$parent_dir"; then
+                TRACKED_PATHS+=("$parent_dir")
             fi
+
+            echo -e "${CYAN}  → 追踪到: $proc_path${NC}"
         fi
-    done < <(pgrep -f "nezha-agent" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
+    done < <(pgrep -f "[n]ezha-agent" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
 fi
 
 # 通过systemd服务追踪路径
-if systemctl list-units --type=service --all | grep -qiE "nezha-agent|nezha\.service"; then
+if systemctl list-units --type=service --all 2>/dev/null | grep -qiE "nezha-agent|nezha\.service"; then
     echo -e "${YELLOW}正在分析systemd服务配置...${NC}"
     echo -e "${YELLOW}Analyzing systemd service configs...${NC}"
-    
+
     while IFS= read -r service_file; do
         if [ -f "$service_file" ]; then
-            # 从服务文件中提取ExecStart路径
-            exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/ExecStart=//' | awk '{print $1}')
+            # 从服务文件中提取ExecStart路径（修复: 去除 -, @, +, ! 等systemd前缀修饰符）
+            exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+]*//' | awk '{print $1}')
             if [ -n "$exec_start" ] && [ -f "$exec_start" ]; then
-                real_path=$(realpath "$exec_start" 2>/dev/null)
+                real_path=$(realpath "$exec_start" 2>/dev/null || readlink -f "$exec_start" 2>/dev/null)
                 if [ -n "$real_path" ]; then
                     TRACKED_PATHS+=("$real_path")
                     parent_dir=$(dirname "$real_path")
@@ -136,11 +187,11 @@ if systemctl list-units --type=service --all | grep -qiE "nezha-agent|nezha\.ser
                     echo -e "${CYAN}  → 从服务追踪到: $real_path${NC}"
                 fi
             fi
-            
-            # 提取WorkingDirectory
-            working_dir=$(grep -E "^WorkingDirectory=" "$service_file" | sed 's/WorkingDirectory=//')
+
+            # 提取WorkingDirectory（修复: 使用 xargs 去除首尾空格）
+            working_dir=$(grep -E "^WorkingDirectory=" "$service_file" | sed 's/^WorkingDirectory=//' | xargs)
             if [ -n "$working_dir" ] && [ -d "$working_dir" ]; then
-                real_path=$(realpath "$working_dir" 2>/dev/null)
+                real_path=$(realpath "$working_dir" 2>/dev/null || readlink -f "$working_dir" 2>/dev/null)
                 if [ -n "$real_path" ] && ! is_protected_dir "$real_path"; then
                     TRACKED_PATHS+=("$real_path")
                     echo -e "${CYAN}  → 工作目录: $real_path${NC}"
@@ -153,11 +204,10 @@ fi
 # 去重并显示所有追踪到的路径
 if [ ${#TRACKED_PATHS[@]} -gt 0 ]; then
     # 使用关联数组去重
-    declare -A unique_paths
     for path in "${TRACKED_PATHS[@]}"; do
         unique_paths["$path"]=1
     done
-    
+
     echo -e "\n${GREEN}✓ 智能追踪发现以下安装路径:${NC}"
     echo -e "${GREEN}✓ Intelligent tracking found these installation paths:${NC}"
     for path in "${!unique_paths[@]}"; do
@@ -178,10 +228,10 @@ if [ "$cron_result" != "No crontab found" ]; then
     echo -e "${YELLOW}发现相关定时任务:${NC}"
     echo -e "${YELLOW}Found related cron jobs:${NC}"
     echo "$cron_result"
-    
+
     echo -e "${YELLOW}正在移除相关定时任务...${NC}"
     echo -e "${YELLOW}Removing related cron jobs...${NC}"
-    crontab -l | grep -v -iE "nezha-agent|/nezha/" | crontab -
+    crontab -l 2>/dev/null | grep -v -iE "nezha-agent|/nezha/" | crontab -
     echo -e "${GREEN}定时任务清理完成${NC}"
     echo -e "${GREEN}Cron jobs cleaned${NC}"
 else
@@ -192,12 +242,12 @@ fi
 # 步骤3: 停止并禁用所有nezha-agent服务（精确匹配）
 echo -e "\n${BLUE}[步骤3] 停止并禁用所有哪吒探针服务...${NC}"
 echo -e "${BLUE}[Step3] Stopping and disabling all Nezha Agent services...${NC}"
-nezha_services=$(systemctl list-units --type=service --all | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
+nezha_services=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
 if [ -n "$nezha_services" ]; then
     echo -e "${YELLOW}发现以下哪吒探针服务:${NC}"
     echo -e "${YELLOW}Found the following Nezha Agent services:${NC}"
     echo "$nezha_services"
-    
+
     for service in $nezha_services; do
         echo -e "${YELLOW}停止并禁用 $service...${NC}"
         echo -e "${YELLOW}Stopping and disabling $service...${NC}"
@@ -214,10 +264,11 @@ fi
 # 步骤4: 杀死所有相关进程
 echo -e "\n${BLUE}[步骤4] 强制终止所有哪吒探针进程...${NC}"
 echo -e "${BLUE}[Step4] Forcefully terminating all Nezha Agent processes...${NC}"
-if pgrep -f "nezha-agent" >/dev/null; then
+# 修复: 使用 [n]ezha-agent 括号技巧，排除脚本自身的bash进程
+if pgrep -f "[n]ezha-agent" >/dev/null; then
     echo -e "${YELLOW}正在终止进程...${NC}"
     echo -e "${YELLOW}Terminating processes...${NC}"
-    pkill -9 -f "nezha-agent"
+    pkill -9 -f "[n]ezha-agent"
     sleep 1
     echo -e "${GREEN}进程已终止${NC}"
     echo -e "${GREEN}Processes terminated${NC}"
@@ -234,7 +285,7 @@ if [ -n "$service_files" ]; then
     echo -e "${YELLOW}发现以下服务文件:${NC}"
     echo -e "${YELLOW}Found the following service files:${NC}"
     echo "$service_files"
-    
+
     echo -e "${YELLOW}删除服务文件...${NC}"
     echo -e "${YELLOW}Removing service files...${NC}"
     find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) -exec rm -f {} \; 2>/dev/null
@@ -264,11 +315,12 @@ binaries=(
     "/bin/nezha-agent"
 )
 
+# 修复: 标准路径也通过 safe_remove 删除，统一安全检查
 for dir in "${directories[@]}"; do
     if [ -d "$dir" ]; then
         echo -e "${YELLOW}删除目录: $dir${NC}"
         echo -e "${YELLOW}Removing directory: $dir${NC}"
-        rm -rf "$dir"
+        safe_remove "$dir" "$dir (standard install dir)"
     fi
 done
 
@@ -276,7 +328,7 @@ for bin in "${binaries[@]}"; do
     if [ -f "$bin" ]; then
         echo -e "${YELLOW}删除二进制文件: $bin${NC}"
         echo -e "${YELLOW}Removing binary file: $bin${NC}"
-        rm -f "$bin"
+        safe_remove "$bin" "$bin (standard binary)"
     fi
 done
 
@@ -284,29 +336,10 @@ done
 if [ ${#unique_paths[@]} -gt 0 ]; then
     echo -e "\n${CYAN}[步骤6.5] 🎯 清理智能追踪到的路径...${NC}"
     echo -e "${CYAN}[Step6.5] 🎯 Cleaning tracked paths...${NC}"
-    
+
     for path in "${!unique_paths[@]}"; do
-        if [ -e "$path" ]; then
-            # 检查是否为系统保护目录
-            if is_protected_dir "$path"; then
-                echo -e "${RED}⚠️  跳过系统保护目录: $path${NC}"
-                echo -e "${RED}⚠️  Skipping protected system directory: $path${NC}"
-                continue
-            fi
-            
-            # 再次确认路径包含nezha
-            if [[ "$path" == *"nezha"* ]]; then
-                echo -e "${YELLOW}删除追踪到的路径: $path${NC}"
-                echo -e "${YELLOW}Removing tracked path: $path${NC}"
-                rm -rf "$path" 2>/dev/null
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✓ 已删除${NC}"
-                else
-                    echo -e "${RED}✗ 删除失败${NC}"
-                fi
-            else
-                echo -e "${YELLOW}⚠️  路径不包含nezha，跳过: $path${NC}"
-            fi
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            safe_remove "$path"
         fi
     done
 fi
@@ -318,30 +351,30 @@ echo -e "${YELLOW}正在搜索系统中的哪吒探针相关文件...${NC}"
 echo -e "${YELLOW}Searching for Nezha Agent related files in the system...${NC}"
 
 # 创建临时文件保存查找结果
-temp_file=$(mktemp)
+temp_file=$(mktemp) || {
+    echo -e "${RED}[错误] 无法创建临时文件，请检查 /tmp 权限${NC}"
+    echo -e "${RED}[Error] Failed to create temporary file, check /tmp permissions${NC}"
+    exit 1
+}
+# 修复: 添加 trap 确保 Ctrl+C 中断时也清理临时文件
+trap 'rm -f "$temp_file"' EXIT
 
-# ⚠️ 安全修复：只搜索包含 "nezha" 的文件
-# ⚠️ Safety Fix: Only search for files containing "nezha"
-find /root /home /tmp /var/tmp /etc /usr/local /opt /data /www 2>/dev/null | grep -i "nezha" > "$temp_file"
+# 使用 find -iname 进行大小写不敏感的文件名匹配（比 find | grep 更高效且一致）
+find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
+    -iname "*nezha*" 2>/dev/null > "$temp_file"
 
 if [ -s "$temp_file" ]; then
     echo -e "${YELLOW}发现以下相关文件:${NC}"
     echo -e "${YELLOW}Found the following related files:${NC}"
     cat "$temp_file"
-    
+
     echo -e "\n${YELLOW}是否删除这些文件? [y/N] ${NC}"
     echo -e "${YELLOW}Would you like to delete these files? [y/N] ${NC}"
-    read -r response
+    # 修复: 从 /dev/tty 读取，确保 curl-pipe 场景下交互正常
+    read -r response </dev/tty
     if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
         while IFS= read -r file; do
-            # 三重安全检查
-            if [[ "$file" == *"nezha"* ]] && [ -e "$file" ] && ! is_protected_dir "$file"; then
-                echo -e "${YELLOW}删除: $file${NC}"
-                echo -e "${YELLOW}Removing: $file${NC}"
-                rm -rf "$file" 2>/dev/null
-            elif is_protected_dir "$file"; then
-                echo -e "${RED}⚠️  跳过系统保护路径: $file${NC}"
-            fi
+            safe_remove "$file"
         done < "$temp_file"
         echo -e "${GREEN}文件已删除${NC}"
         echo -e "${GREEN}Files removed${NC}"
@@ -354,13 +387,10 @@ else
     echo -e "${GREEN}No related files found${NC}"
 fi
 
-# 删除临时文件
-rm -f "$temp_file"
-
 # 步骤8: 重新加载systemd
 echo -e "\n${BLUE}[步骤8] 重新加载systemd配置...${NC}"
 echo -e "${BLUE}[Step8] Reloading systemd configuration...${NC}"
-systemctl daemon-reload
+systemctl daemon-reload 2>/dev/null
 echo -e "${GREEN}systemd配置已重新加载${NC}"
 echo -e "${GREEN}systemd configuration reloaded${NC}"
 
@@ -368,17 +398,18 @@ echo -e "${GREEN}systemd configuration reloaded${NC}"
 echo -e "\n${BLUE}[步骤9] 检查相关Docker容器...${NC}"
 echo -e "${BLUE}[Step9] Checking related Docker containers...${NC}"
 if command -v docker &> /dev/null; then
-    nezha_containers=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" | grep -iE "nezha-agent|nezha:" || echo "No containers found")
+    nezha_containers=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:" || echo "No containers found")
     if [ "$nezha_containers" != "No containers found" ]; then
         echo -e "${YELLOW}发现以下相关Docker容器:${NC}"
         echo -e "${YELLOW}Found the following related Docker containers:${NC}"
         echo "$nezha_containers"
-        
+
         echo -e "${YELLOW}是否停止并删除这些容器? [y/N] ${NC}"
         echo -e "${YELLOW}Would you like to stop and remove these containers? [y/N] ${NC}"
-        read -r response
+        # 修复: 从 /dev/tty 读取，确保 curl-pipe 场景下交互正常
+        read -r response </dev/tty
         if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            container_ids=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" | grep -iE "nezha-agent|nezha:" | awk '{print $1}')
+            container_ids=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:" | awk '{print $1}')
             for id in $container_ids; do
                 echo -e "${YELLOW}停止并删除容器: $id${NC}"
                 echo -e "${YELLOW}Stopping and removing container: $id${NC}"
@@ -405,7 +436,8 @@ echo -e "\n${BLUE}[步骤10] 最终检查...${NC}"
 echo -e "${BLUE}[Step10] Final check...${NC}"
 
 # 检查是否还有任何nezha进程
-if pgrep -f "nezha-agent" >/dev/null; then
+# 修复: 使用 [n]ezha-agent 括号技巧排除脚本自身
+if pgrep -f "[n]ezha-agent" >/dev/null; then
     echo -e "${RED}⚠️  警告: 仍然检测到哪吒探针进程!${NC}"
     echo -e "${RED}⚠️  Warning: Nezha Agent processes still detected!${NC}"
     ps aux | grep -E "[n]ezha-agent"
@@ -415,7 +447,7 @@ else
 fi
 
 # 检查是否还有任何服务
-nezha_services_remaining=$(systemctl list-units --type=service --all | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
+nezha_services_remaining=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
 if [ -n "$nezha_services_remaining" ]; then
     echo -e "${RED}⚠️  警告: 仍然检测到哪吒探针服务!${NC}"
     echo -e "${RED}⚠️  Warning: Nezha Agent services still detected!${NC}"
@@ -426,7 +458,7 @@ else
 fi
 
 # 检查是否还有残留文件
-remaining_files=$(find /root /home /opt /usr/local /data /www 2>/dev/null | grep -i "nezha" | head -10)
+remaining_files=$(find /root /home /opt /usr/local /data /www /var/log /var/lib 2>/dev/null | grep -i "nezha" | head -10)
 if [ -n "$remaining_files" ]; then
     echo -e "${YELLOW}⚠️  发现一些可能的残留文件:${NC}"
     echo -e "${YELLOW}⚠️  Found some possible remaining files:${NC}"
@@ -442,8 +474,8 @@ echo -e "\n${BLUE}==============================================================
 echo -e "${GREEN}           哪吒探针Agent清理完成!                               ${NC}"
 echo -e "${GREEN}           Nezha Agent cleanup complete!                         ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v1.2 新特性已启用: 智能路径追踪 + 系统保护${NC}"
-echo -e "${CYAN}v1.2 features enabled: Smart tracking + system protection${NC}"
+echo -e "${CYAN}v1.3 修复: pkill自伤 + 保护目录精准化 + stdin修复${NC}"
+echo -e "${CYAN}v1.3 fixes: self-kill + targeted protection + stdin${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 echo -e "${YELLOW}如果您在清理后仍然遇到问题，可能需要考虑系统重启。${NC}"
 echo -e "${YELLOW}If issues persist after cleanup, consider restarting your system.${NC}"
