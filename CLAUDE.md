@@ -28,7 +28,7 @@ The script is a linear 10-step interactive process with embedded safety guards:
 | 6.5 | Remove paths discovered by step 1.5 | Checks `is_protected_dir()` before deleting |
 | 7 | Global `find` scan + interactive delete | Triple guard: path contains `nezha`, file exists, not a protected dir; user must confirm `[y/N]` |
 | 8 | `systemctl daemon-reload` | Reload after unit changes |
-| 9 | Docker container check | Interactive, only containers matching `nezha-agent\|nezha:` |
+| 9 | Docker container check | Interactive. Uses Docker native `--filter "name=*nezha*"` + grep fallback + per-container `docker inspect` verification before stop/rm |
 | 10 | Final verification | Reports remaining processes, services, and files |
 
 ## Safety patterns (do not weaken)
@@ -37,15 +37,17 @@ The script is a linear 10-step interactive process with embedded safety guards:
 - **`is_protected_dir()`** (line 79): Resolves symlinks via `realpath` (falling back to `readlink -f`, then raw path) before comparing against PROTECTED_DIRS. Uses prefix matching (`$protected/*`) so subdirectories of protected dirs are also guarded.
 - **Exact name matching:** All grep/find patterns use `nezha` rather than generic `agent` to avoid false positives on ssh-agent, 1panel-agent, tailscale-agent, etc.
 - **Interactive confirmation:** Steps 7 and 9 require user `[y/N]` confirmation before destructive actions. Both use `</dev/tty` redirection so they work when piped via `curl | bash`.
+- **Docker defense-in-depth (v1.4):** Step 9 uses three layers: (1) Docker native `--filter "name=*nezha*"` for precise container-name matching, (2) `grep -iE "nezha-agent|nezha:"` fallback for image-name matching, (3) `docker inspect` per-container verification before `stop/rm` — containers failing verification are skipped with a warning.
+- **Docker storage exclusion (v1.4):** Step 7 `find` scan prunes `/var/lib/docker` and `/var/lib/containerd` to prevent accidental traversal of container runtime internals.
 
 ## Version management
 
 The version string appears in three places that must stay in sync:
-1. Header comment on line 8: `# Version: 1.3 (Bugfix Release)`
-2. Welcome banner echo on lines 35-38: `v1.3 (Bugfix版)` / `v1.3 (Bugfix Release)`
-3. Closing banner echo on line 477: `v1.3 修复` / `v1.3 fixes`
+1. Header comment on line 8: `# Version: 1.4 (Docker Safety Release)`
+2. Welcome banner echo on lines 35-38: `v1.4 (Docker安全版)` / `v1.4 (Docker Safety)`
+3. Closing banner echo on line 477: `v1.4 修复` / `v1.4 fixes`
 
-**Note:** The README.md version badges still say `v1.1` — these are stale and should be updated when the script version changes.
+**Note:** README.md version badges and documentation now reflect v1.4.
 
 ## Implementation patterns (v1.3)
 
@@ -81,8 +83,8 @@ Step 6.5 iterates `unique_paths` and calls `safe_remove()` on each existing path
 
 ## Known quirks
 
-- **Step 5 uses raw `rm -f`** instead of `safe_remove()`. Service files live under `/etc/systemd/system/` which is not a protected directory, so the risk is low, but this is an inconsistency with the rest of the script's safety discipline.
-- **`SCRIPT_PID=$$`** (line 54) is dead code. The `[n]ezha-agent` bracket trick handles self-avoidance. Could be removed in a future cleanup.
+- **`SCRIPT_PID=$`** (line 54) is dead code. The `[n]ezha-agent` bracket trick handles self-avoidance. Could be removed in a future cleanup.
+- **v1.4 fix:** Step 5 now uses `safe_remove()` instead of raw `rm -f`, resolving the previous inconsistency with the rest of the script's safety discipline.
 
 ## Upstream context
 
