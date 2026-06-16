@@ -5,10 +5,16 @@
 #
 #      Project: https://github.com/everett7623/nezha-agent-cleaner
 #      Author: everett7623
-#      Version: 1.3 (Bugfix Release)
+#      Version: 1.4 (Docker Safety Release)
 #
 #      Description: A safe utility to completely remove Nezha Agent with
 #                   intelligent path tracking, even for non-standard installations.
+#
+#      Changelog v1.4:
+#      - Fixed: Step 7 find scan now excludes Docker/containerd internal storage
+#      - Fixed: Step 9 Docker detection rewritten with native --filter + array + verification
+#      - Fixed: Step 5 now uses safe_remove() for consistent safety discipline
+#      - Security: Docker containers are verified individually before stop/rm
 #
 #      Changelog v1.3:
 #      - Fixed: pkill no longer matches the script's own process
@@ -33,11 +39,11 @@ NC='\033[0m' # No Color
 
 # 打印运行时的欢迎横幅
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${GREEN}        哪吒探针Agent彻底清理脚本 v1.3 (Bugfix版)            ${NC}"
-echo -e "${GREEN}        Nezha Agent Removal Tool v1.3 (Bugfix Release)        ${NC}"
+echo -e "${GREEN}        哪吒探针Agent彻底清理脚本 v1.4 (Docker安全版)        ${NC}"
+echo -e "${GREEN}        Nezha Agent Removal Tool v1.4 (Docker Safety)         ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v1.3: 修复pkill自伤 + 保护目录精准化 + stdin修复${NC}"
-echo -e "${CYAN}v1.3: Fixed self-kill + targeted protection + stdin fix${NC}"
+echo -e "${CYAN}v1.4: Docker原生过滤 + 容器逐验证 + 排除Docker内部存储${NC}"
+echo -e "${CYAN}v1.4: Native filter + per-container verify + exclude Docker storage${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # 检查是否为root用户
@@ -288,7 +294,10 @@ if [ -n "$service_files" ]; then
 
     echo -e "${YELLOW}删除服务文件...${NC}"
     echo -e "${YELLOW}Removing service files...${NC}"
-    find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) -exec rm -f {} \; 2>/dev/null
+    # 使用 safe_remove 统一安全删除（v1.4: 替代裸 rm -f）
+    while IFS= read -r svc_file; do
+        safe_remove "$svc_file" "$svc_file (systemd unit)"
+    done <<< "$service_files"
     echo -e "${GREEN}服务文件已删除${NC}"
     echo -e "${GREEN}Service files removed${NC}"
 else
@@ -360,8 +369,11 @@ temp_file=$(mktemp) || {
 trap 'rm -f "$temp_file"' EXIT
 
 # 使用 find -iname 进行大小写不敏感的文件名匹配（比 find | grep 更高效且一致）
+# 安全: 排除 Docker/containerd 运行时内部存储，防止误伤其他容器数据
 find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
-    -iname "*nezha*" 2>/dev/null > "$temp_file"
+    \( -path /var/lib/docker -prune \) -o \
+    \( -path /var/lib/containerd -prune \) -o \
+    \( -iname "*nezha*" -print \) 2>/dev/null > "$temp_file"
 
 if [ -s "$temp_file" ]; then
     echo -e "${YELLOW}发现以下相关文件:${NC}"
@@ -394,27 +406,53 @@ systemctl daemon-reload 2>/dev/null
 echo -e "${GREEN}systemd配置已重新加载${NC}"
 echo -e "${GREEN}systemd configuration reloaded${NC}"
 
-# 步骤9: 检查Docker容器（精确匹配）
+# 步骤9: 检查Docker容器（使用原生过滤器 + 防御性逐容器验证）
 echo -e "\n${BLUE}[步骤9] 检查相关Docker容器...${NC}"
 echo -e "${BLUE}[Step9] Checking related Docker containers...${NC}"
 if command -v docker &> /dev/null; then
-    nezha_containers=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:" || echo "No containers found")
-    if [ "$nezha_containers" != "No containers found" ]; then
+    # 使用关联数组收集并自动去重: key=container_id, value=name|image
+    declare -A nezha_container_map
+    # 定义一个 tab 字符用于 IFS 分隔
+    TAB_CHAR=$(printf '\t')
+
+    # 方法1: Docker 原生过滤器 — 匹配容器名包含 "nezha" 的容器（最安全、最高效）
+    while IFS="$TAB_CHAR" read -r cid cname cimage; do
+        [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
+    done < <(docker ps -a --filter "name=*nezha*" --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null)
+
+    # 方法2: grep 补充匹配 — 镜像名含 nezha-agent 或 nezha: 的容器
+    while IFS="$TAB_CHAR" read -r cid cname cimage; do
+        [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
+    done < <(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:")
+
+    if [ ${#nezha_container_map[@]} -gt 0 ]; then
         echo -e "${YELLOW}发现以下相关Docker容器:${NC}"
         echo -e "${YELLOW}Found the following related Docker containers:${NC}"
-        echo "$nezha_containers"
+        for cid in "${!nezha_container_map[@]}"; do
+            IFS='|' read -r cname cimage <<< "${nezha_container_map[$cid]}"
+            printf "  %s\t%s\t%s\n" "$cid" "$cname" "$cimage"
+        done
 
         echo -e "${YELLOW}是否停止并删除这些容器? [y/N] ${NC}"
         echo -e "${YELLOW}Would you like to stop and remove these containers? [y/N] ${NC}"
-        # 修复: 从 /dev/tty 读取，确保 curl-pipe 场景下交互正常
         read -r response </dev/tty
         if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            container_ids=$(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:" | awk '{print $1}')
-            for id in $container_ids; do
-                echo -e "${YELLOW}停止并删除容器: $id${NC}"
-                echo -e "${YELLOW}Stopping and removing container: $id${NC}"
-                docker stop "$id" 2>/dev/null
-                docker rm "$id" 2>/dev/null
+            for cid in "${!nezha_container_map[@]}"; do
+                IFS='|' read -r cname cimage <<< "${nezha_container_map[$cid]}"
+
+                # 防御性验证: 通过 docker inspect 再次确认容器名或镜像名含 "nezha"
+                verify_name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                verify_image=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+                if [[ "$verify_name" == *nezha* ]] || [[ "$verify_image" == *nezha* ]]; then
+                    echo -e "${YELLOW}停止并删除容器: $cid ($cname) [镜像: $cimage]${NC}"
+                    echo -e "${YELLOW}Stopping and removing container: $cid ($cname) [Image: $cimage]${NC}"
+                    docker stop "$cid" 2>/dev/null
+                    docker rm "$cid" 2>/dev/null
+                else
+                    echo -e "${RED}⚠️  容器 $cid ($cname) 未通过 nezha 验证，跳过删除${NC}"
+                    echo -e "${RED}⚠️  Container $cid ($cname) failed nezha verification, skipping${NC}"
+                fi
             done
             echo -e "${GREEN}容器已清理${NC}"
             echo -e "${GREEN}Containers cleaned${NC}"
@@ -474,8 +512,8 @@ echo -e "\n${BLUE}==============================================================
 echo -e "${GREEN}           哪吒探针Agent清理完成!                               ${NC}"
 echo -e "${GREEN}           Nezha Agent cleanup complete!                         ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v1.3 修复: pkill自伤 + 保护目录精准化 + stdin修复${NC}"
-echo -e "${CYAN}v1.3 fixes: self-kill + targeted protection + stdin${NC}"
+echo -e "${CYAN}v1.4 修复: Docker原生过滤 + 容器逐验证 + 排除Docker存储${NC}"
+echo -e "${CYAN}v1.4 fixes: native filter + per-container verify + exclude Docker storage${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 echo -e "${YELLOW}如果您在清理后仍然遇到问题，可能需要考虑系统重启。${NC}"
 echo -e "${YELLOW}If issues persist after cleanup, consider restarting your system.${NC}"
