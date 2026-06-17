@@ -5,12 +5,16 @@
 #
 #      Project: https://github.com/everett7623/nezha-agent-cleaner
 #      Author: everett7623
-#      Version: 2.0 (Dashboard + Agent Dual-Mode)
+#      Version: 2.1 (Safety Enhanced)
 #
 #      Description: A safe utility to completely remove Nezha Agent and/or
 #                   Dashboard with intelligent path tracking and Docker
 #                   defense-in-depth. Supports three cleanup modes via
 #                   interactive menu.
+#
+#      Changelog v2.1:
+#      - Fixed: safe_remove() now skips media/document files (png, jpg, pdf, md, etc.)
+#               to prevent accidental deletion of user content like article images
 #
 #      Changelog v2.0:
 #      - Added: Interactive menu — choose Agent, Dashboard, or Both cleanup
@@ -47,13 +51,14 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+
 # 打印运行时的欢迎横幅
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${GREEN}     哪吒探针清理脚本 v2.0 (Dashboard + Agent 双模式)         ${NC}"
-echo -e "${GREEN}     Nezha Cleaner v2.0 (Dashboard + Agent Dual-Mode)          ${NC}"
+echo -e "${GREEN}     哪吒探针清理脚本 v2.1 (安全增强)                         ${NC}"
+echo -e "${GREEN}     Nezha Cleaner v2.1 (Safety Enhanced)                      ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v2.0: 启动菜单 — 可选卸载 Agent / Dashboard / 全部${NC}"
-echo -e "${CYAN}v2.0: Menu-driven — Agent / Dashboard / Both cleanup modes${NC}"
+echo -e "${CYAN}v2.1: 启动菜单 — 可选卸载 Agent / Dashboard / 全部${NC}"
+echo -e "${CYAN}v2.1: Menu-driven — Agent / Dashboard / Both cleanup modes${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # 检查是否为root用户
@@ -169,6 +174,22 @@ safe_remove() {
     if [[ "$target_lower" != *"nezha"* ]]; then
         echo -e "${YELLOW}⚠️  路径不包含nezha，跳过: $desc${NC}"
         return 1
+    fi
+
+    # 文件类型安全检查: 跳过媒体/文档类文件（不可能是哪吒监控软件组件）
+    # 哪吒监控组件只包含: 二进制文件(无扩展名)、.service、.json、.yaml、.sh 等
+    # 以下文件类型是用户个人内容，即使文件名含"nezha"也应保护
+    if [ -f "$target" ]; then
+        case "$target_lower" in
+            *.png|*.jpg|*.jpeg|*.gif|*.svg|*.webp|*.bmp|*.ico|*.heic|*.heif|\
+            *.pdf|*.doc|*.docx|*.md|*.txt|*.rst|*.html|*.htm|*.rtf|\
+            *.mp4|*.mp3|*.avi|*.mov|*.mkv|*.wav|*.flac|\
+            *.pptx|*.ppt|*.xlsx|*.xls|*.csv)
+                echo -e "${YELLOW}⚠️  跳过媒体/文档文件 (非哪吒监控组件): $desc${NC}"
+                echo -e "${YELLOW}⚠️  Skipping media/document file (not a Nezha component): $desc${NC}"
+                return 1
+                ;;
+        esac
     fi
 
     # 执行删除
@@ -409,6 +430,8 @@ cleanup_agent() {
     echo -e "${BLUE}[Step7] Finding and removing all related files (global search)...${NC}"
     echo -e "${YELLOW}正在搜索系统中的哪吒探针相关文件...${NC}"
     echo -e "${YELLOW}Searching for Nezha Agent related files in the system...${NC}"
+    echo -e "${CYAN}注意: 图片/文档/媒体文件将自动跳过（非哪吒监控组件）${NC}"
+    echo -e "${CYAN}Note: Images/documents/media files will be auto-skipped (not Nezha components)${NC}"
 
     temp_file=$(mktemp) || {
         echo -e "${RED}[错误] 无法创建临时文件，请检查 /tmp 权限${NC}"
@@ -808,6 +831,8 @@ cleanup_dashboard() {
     echo -e "${BLUE}[Step D9] Finding and removing Dashboard-related files (global search)...${NC}"
     echo -e "${YELLOW}正在搜索Dashboard相关文件...${NC}"
     echo -e "${YELLOW}Searching for Dashboard-related files...${NC}"
+    echo -e "${CYAN}注意: 图片/文档/媒体文件将自动跳过（非哪吒监控组件）${NC}"
+    echo -e "${CYAN}Note: Images/documents/media files will be auto-skipped (not Nezha components)${NC}"
 
     temp_file=$(mktemp) || {
         echo -e "${RED}[错误] 无法创建临时文件，请检查 /tmp 权限${NC}"
@@ -1039,12 +1064,12 @@ echo -e "\n${BLUE}==============================================================
 echo -e "${GREEN}           哪吒探针清理完成!                                     ${NC}"
 echo -e "${GREEN}           Nezha cleanup complete!                               ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v2.0: 双模式卸载 — Agent + Dashboard 安全清理${NC}"
-echo -e "${CYAN}v2.0: Dual-mode — Agent + Dashboard safe uninstall${NC}"
+echo -e "${CYAN}v2.1: 安全增强 — Agent + Dashboard 安全清理${NC}"
+echo -e "${CYAN}v2.1: Safety Enhanced — Agent + Dashboard safe uninstall${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 echo -e "${YELLOW}如果您在清理后仍然遇到问题，可能需要考虑系统重启。${NC}"
 echo -e "${YELLOW}If issues persist after cleanup, consider restarting your system.${NC}"
-echo -e "\n${GREEN}感谢使用此脚本!${NC}"
-echo -e "${GREEN}Thank you for using this script!${NC}"
+echo -e "\n${GREEN}感谢使用此脚本! 您的使用帮助我们持续改进。${NC}"
+echo -e "${GREEN}Thank you for using this script! Your usage helps us improve.${NC}"
 
 exit 0
