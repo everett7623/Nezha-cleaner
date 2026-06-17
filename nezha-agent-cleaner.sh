@@ -5,10 +5,20 @@
 #
 #      Project: https://github.com/everett7623/nezha-agent-cleaner
 #      Author: everett7623
-#      Version: 1.4 (Docker Safety Release)
+#      Version: 2.0 (Dashboard + Agent Dual-Mode)
 #
-#      Description: A safe utility to completely remove Nezha Agent with
-#                   intelligent path tracking, even for non-standard installations.
+#      Description: A safe utility to completely remove Nezha Agent and/or
+#                   Dashboard with intelligent path tracking and Docker
+#                   defense-in-depth. Supports three cleanup modes via
+#                   interactive menu.
+#
+#      Changelog v2.0:
+#      - Added: Interactive menu — choose Agent, Dashboard, or Both cleanup
+#      - Added: Dashboard (主控端) cleanup with 12-step safety pipeline
+#      - Added: Docker image removal with separate user confirmation (Dashboard)
+#      - Added: Container classification — Agent/Dashboard modes don't cross-target
+#      - Changed: Agent cleanup extracted to function, Docker filter narrowed
+#      - Security: All v1.4 safety patterns retained and extended to Dashboard
 #
 #      Changelog v1.4:
 #      - Fixed: Step 7 find scan now excludes Docker/containerd internal storage
@@ -39,11 +49,11 @@ NC='\033[0m' # No Color
 
 # 打印运行时的欢迎横幅
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${GREEN}        哪吒探针Agent彻底清理脚本 v1.4 (Docker安全版)        ${NC}"
-echo -e "${GREEN}        Nezha Agent Removal Tool v1.4 (Docker Safety)         ${NC}"
+echo -e "${GREEN}     哪吒探针清理脚本 v2.0 (Dashboard + Agent 双模式)         ${NC}"
+echo -e "${GREEN}     Nezha Cleaner v2.0 (Dashboard + Agent Dual-Mode)          ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v1.4: Docker原生过滤 + 容器逐验证 + 排除Docker内部存储${NC}"
-echo -e "${CYAN}v1.4: Native filter + per-container verify + exclude Docker storage${NC}"
+echo -e "${CYAN}v2.0: 启动菜单 — 可选卸载 Agent / Dashboard / 全部${NC}"
+echo -e "${CYAN}v2.0: Menu-driven — Agent / Dashboard / Both cleanup modes${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # 检查是否为root用户
@@ -53,10 +63,53 @@ if [ "$(id -u)" != "0" ]; then
    exit 1
 fi
 
-echo -e "${YELLOW}[信息] 开始清理哪吒探针Agent...${NC}"
-echo -e "${YELLOW}[INFO] Starting Nezha Agent cleanup...${NC}"
+# ==============================================================================
+#  主菜单 — 选择清理模式
+# ==============================================================================
 
-# 获取脚本自身的PID，防止 pgrep/pkill 误匹配自身
+echo -e "\n${BLUE}=================================================================${NC}"
+echo -e "${GREEN}        请选择清理模式 / Please select cleanup mode:            ${NC}"
+echo -e "${BLUE}=================================================================${NC}"
+echo -e ""
+echo -e "${YELLOW}  1)${NC} ${GREEN}卸载 Agent (被控端)${NC} / Uninstall Agent"
+echo -e "     → 清理被监控服务器上的哪吒探针Agent"
+echo -e "     → Remove Nezha Agent from monitored servers"
+echo -e ""
+echo -e "${YELLOW}  2)${NC} ${GREEN}卸载 Dashboard (主控端)${NC} / Uninstall Dashboard"
+echo -e "     → 清理哪吒探针监控面板及其数据（含Docker镜像）"
+echo -e "     → Remove Nezha Dashboard, data files, and Docker images"
+echo -e ""
+echo -e "${YELLOW}  3)${NC} ${GREEN}同时卸载两者${NC} / Uninstall Both"
+echo -e "     → 彻底清除哪吒探针的一切：Agent + Dashboard"
+echo -e "     → Complete removal: Agent + Dashboard + Docker images"
+echo -e ""
+echo -e "${YELLOW}  4)${NC} ${GREEN}退出${NC} / Exit"
+echo -e ""
+echo -e "${BLUE}=================================================================${NC}"
+echo -ne "${YELLOW}请输入选项 (1-4) / Enter your choice (1-4): ${NC}"
+read -r CLEANUP_MODE </dev/tty
+
+case "$CLEANUP_MODE" in
+    1) TARGET="agent"
+       echo -e "\n${GREEN}✓ 已选择: 卸载 Agent (被控端)${NC}"
+       echo -e "${GREEN}✓ Selected: Uninstall Agent${NC}" ;;
+    2) TARGET="dashboard"
+       echo -e "\n${GREEN}✓ 已选择: 卸载 Dashboard (主控端)${NC}"
+       echo -e "${GREEN}✓ Selected: Uninstall Dashboard${NC}" ;;
+    3) TARGET="both"
+       echo -e "\n${GREEN}✓ 已选择: 同时卸载两者${NC}"
+       echo -e "${GREEN}✓ Selected: Uninstall Both${NC}" ;;
+    4) echo -e "\n${GREEN}已退出 / Exited${NC}"; exit 0 ;;
+    *) echo -e "\n${RED}[错误] 无效选择，请输入 1-4${NC}"
+       echo -e "${RED}[Error] Invalid choice, please enter 1-4${NC}"
+       exit 1 ;;
+esac
+
+# ==============================================================================
+#  安全基础设施 — 保护目录 + 安全删除
+# ==============================================================================
+
+# 获取脚本自身的PID，防止 pgrep/pkill 误匹配自身（历史遗留：实际由 bracket trick 实现）
 SCRIPT_PID=$$
 
 # 定义系统保护目录列表 — 只保护关键系统叶子目录，不保护 /usr/local, /etc, /var 等安装区域
@@ -130,390 +183,864 @@ safe_remove() {
     fi
 }
 
-# 步骤1: 检查和显示系统中的nezha进程
-echo -e "\n${BLUE}[步骤1] 检查哪吒探针进程...${NC}"
-echo -e "${BLUE}[Step1] Checking Nezha Agent processes...${NC}"
-ps_result=$(ps aux | grep -E "[n]ezha-agent")
-if [ -n "$ps_result" ]; then
-    echo -e "${YELLOW}发现哪吒探针进程:${NC}"
-    echo -e "${YELLOW}Found Nezha Agent processes:${NC}"
-    echo "$ps_result"
-else
-    echo -e "${GREEN}未发现哪吒探针进程${NC}"
-    echo -e "${GREEN}No Nezha Agent processes found${NC}"
-fi
+# ==============================================================================
+#  cleanup_agent() — 卸载哪吒探针 Agent (被控端)
+#  沿用 v1.4 的 10 步流程，仅 Docker 过滤器收窄为 *nezha-agent*
+# ==============================================================================
+cleanup_agent() {
+    echo -e "\n${BLUE}=================================================================${NC}"
+    echo -e "${GREEN}        开始卸载哪吒探针 Agent (被控端)                         ${NC}"
+    echo -e "${GREEN}        Starting Nezha Agent (Controlled Endpoint) cleanup      ${NC}"
+    echo -e "${BLUE}=================================================================${NC}"
 
-# 步骤1.5: 智能路径追踪 - 通过进程找到所有相关路径
-echo -e "\n${CYAN}[步骤1.5] 🔍 智能路径追踪...${NC}"
-echo -e "${CYAN}[Step1.5] 🔍 Intelligent path tracking...${NC}"
+    local -a TRACKED_PATHS
+    local -A unique_paths
 
-# 创建数组存储发现的路径
-declare -a TRACKED_PATHS
-# 关联数组提前声明，避免作用域问题（修复: 原在if块内声明）
-declare -A unique_paths
-
-# 通过进程追踪可执行文件路径
-if pgrep -f "[n]ezha-agent" >/dev/null; then
-    echo -e "${YELLOW}正在追踪运行中的进程路径...${NC}"
-    echo -e "${YELLOW}Tracking running process paths...${NC}"
-
-    while IFS= read -r proc_path; do
-        if [ -n "$proc_path" ] && [ -f "$proc_path" ]; then
-            # readlink -f 已经解析了符号链接，无需再次 realpath
-            TRACKED_PATHS+=("$proc_path")
-            parent_dir=$(dirname "$proc_path")
-
-            # 使用 is_protected_dir 替代硬编码的4个目录比对（修复: 统一保护逻辑）
-            if ! is_protected_dir "$parent_dir"; then
-                TRACKED_PATHS+=("$parent_dir")
-            fi
-
-            echo -e "${CYAN}  → 追踪到: $proc_path${NC}"
-        fi
-    done < <(pgrep -f "[n]ezha-agent" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
-fi
-
-# 通过systemd服务追踪路径
-if systemctl list-units --type=service --all 2>/dev/null | grep -qiE "nezha-agent|nezha\.service"; then
-    echo -e "${YELLOW}正在分析systemd服务配置...${NC}"
-    echo -e "${YELLOW}Analyzing systemd service configs...${NC}"
-
-    while IFS= read -r service_file; do
-        if [ -f "$service_file" ]; then
-            # 从服务文件中提取ExecStart路径（修复: 去除 -, @, +, ! 等systemd前缀修饰符）
-            exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+]*//' | awk '{print $1}')
-            if [ -n "$exec_start" ] && [ -f "$exec_start" ]; then
-                real_path=$(realpath "$exec_start" 2>/dev/null || readlink -f "$exec_start" 2>/dev/null)
-                if [ -n "$real_path" ]; then
-                    TRACKED_PATHS+=("$real_path")
-                    parent_dir=$(dirname "$real_path")
-                    if ! is_protected_dir "$parent_dir"; then
-                        TRACKED_PATHS+=("$parent_dir")
-                    fi
-                    echo -e "${CYAN}  → 从服务追踪到: $real_path${NC}"
-                fi
-            fi
-
-            # 提取WorkingDirectory（修复: 使用 xargs 去除首尾空格）
-            working_dir=$(grep -E "^WorkingDirectory=" "$service_file" | sed 's/^WorkingDirectory=//' | xargs)
-            if [ -n "$working_dir" ] && [ -d "$working_dir" ]; then
-                real_path=$(realpath "$working_dir" 2>/dev/null || readlink -f "$working_dir" 2>/dev/null)
-                if [ -n "$real_path" ] && ! is_protected_dir "$real_path"; then
-                    TRACKED_PATHS+=("$real_path")
-                    echo -e "${CYAN}  → 工作目录: $real_path${NC}"
-                fi
-            fi
-        fi
-    done < <(find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) 2>/dev/null)
-fi
-
-# 去重并显示所有追踪到的路径
-if [ ${#TRACKED_PATHS[@]} -gt 0 ]; then
-    # 使用关联数组去重
-    for path in "${TRACKED_PATHS[@]}"; do
-        unique_paths["$path"]=1
-    done
-
-    echo -e "\n${GREEN}✓ 智能追踪发现以下安装路径:${NC}"
-    echo -e "${GREEN}✓ Intelligent tracking found these installation paths:${NC}"
-    for path in "${!unique_paths[@]}"; do
-        if [ -e "$path" ]; then
-            echo -e "${YELLOW}  📍 $path${NC}"
-        fi
-    done
-else
-    echo -e "${GREEN}未通过进程追踪到特殊安装路径${NC}"
-    echo -e "${GREEN}No special installation paths tracked from processes${NC}"
-fi
-
-# 步骤2: 检查定时任务（精确匹配nezha-agent）
-echo -e "\n${BLUE}[步骤2] 检查相关定时任务...${NC}"
-echo -e "${BLUE}[Step2] Checking related cron jobs...${NC}"
-cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-agent|/nezha/" || echo "No crontab found")
-if [ "$cron_result" != "No crontab found" ]; then
-    echo -e "${YELLOW}发现相关定时任务:${NC}"
-    echo -e "${YELLOW}Found related cron jobs:${NC}"
-    echo "$cron_result"
-
-    echo -e "${YELLOW}正在移除相关定时任务...${NC}"
-    echo -e "${YELLOW}Removing related cron jobs...${NC}"
-    crontab -l 2>/dev/null | grep -v -iE "nezha-agent|/nezha/" | crontab -
-    echo -e "${GREEN}定时任务清理完成${NC}"
-    echo -e "${GREEN}Cron jobs cleaned${NC}"
-else
-    echo -e "${GREEN}未发现相关定时任务${NC}"
-    echo -e "${GREEN}No related cron jobs found${NC}"
-fi
-
-# 步骤3: 停止并禁用所有nezha-agent服务（精确匹配）
-echo -e "\n${BLUE}[步骤3] 停止并禁用所有哪吒探针服务...${NC}"
-echo -e "${BLUE}[Step3] Stopping and disabling all Nezha Agent services...${NC}"
-nezha_services=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
-if [ -n "$nezha_services" ]; then
-    echo -e "${YELLOW}发现以下哪吒探针服务:${NC}"
-    echo -e "${YELLOW}Found the following Nezha Agent services:${NC}"
-    echo "$nezha_services"
-
-    for service in $nezha_services; do
-        echo -e "${YELLOW}停止并禁用 $service...${NC}"
-        echo -e "${YELLOW}Stopping and disabling $service...${NC}"
-        systemctl stop "$service" 2>/dev/null
-        systemctl disable "$service" 2>/dev/null
-    done
-    echo -e "${GREEN}所有服务已停止并禁用${NC}"
-    echo -e "${GREEN}All services stopped and disabled${NC}"
-else
-    echo -e "${GREEN}未发现哪吒探针服务${NC}"
-    echo -e "${GREEN}No Nezha Agent services found${NC}"
-fi
-
-# 步骤4: 杀死所有相关进程
-echo -e "\n${BLUE}[步骤4] 强制终止所有哪吒探针进程...${NC}"
-echo -e "${BLUE}[Step4] Forcefully terminating all Nezha Agent processes...${NC}"
-# 修复: 使用 [n]ezha-agent 括号技巧，排除脚本自身的bash进程
-if pgrep -f "[n]ezha-agent" >/dev/null; then
-    echo -e "${YELLOW}正在终止进程...${NC}"
-    echo -e "${YELLOW}Terminating processes...${NC}"
-    pkill -9 -f "[n]ezha-agent"
-    sleep 1
-    echo -e "${GREEN}进程已终止${NC}"
-    echo -e "${GREEN}Processes terminated${NC}"
-else
-    echo -e "${GREEN}没有需要终止的进程${NC}"
-    echo -e "${GREEN}No processes to terminate${NC}"
-fi
-
-# 步骤5: 删除所有服务文件（精确匹配）
-echo -e "\n${BLUE}[步骤5] 删除所有服务文件...${NC}"
-echo -e "${BLUE}[Step5] Removing all service files...${NC}"
-service_files=$(find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) 2>/dev/null)
-if [ -n "$service_files" ]; then
-    echo -e "${YELLOW}发现以下服务文件:${NC}"
-    echo -e "${YELLOW}Found the following service files:${NC}"
-    echo "$service_files"
-
-    echo -e "${YELLOW}删除服务文件...${NC}"
-    echo -e "${YELLOW}Removing service files...${NC}"
-    # 使用 safe_remove 统一安全删除（v1.4: 替代裸 rm -f）
-    while IFS= read -r svc_file; do
-        safe_remove "$svc_file" "$svc_file (systemd unit)"
-    done <<< "$service_files"
-    echo -e "${GREEN}服务文件已删除${NC}"
-    echo -e "${GREEN}Service files removed${NC}"
-else
-    echo -e "${GREEN}未发现服务文件${NC}"
-    echo -e "${GREEN}No service files found${NC}"
-fi
-
-# 步骤6: 删除标准位置的二进制文件和目录
-echo -e "\n${BLUE}[步骤6] 删除标准位置的二进制文件和目录...${NC}"
-echo -e "${BLUE}[Step6] Removing binaries and directories in standard locations...${NC}"
-
-# 标准安装目录
-directories=(
-    "/opt/nezha"
-    "/opt/nezha-agent"
-    "/usr/local/nezha"
-)
-
-# 标准二进制文件位置
-binaries=(
-    "/usr/local/bin/nezha-agent"
-    "/usr/bin/nezha-agent"
-    "/usr/sbin/nezha-agent"
-    "/bin/nezha-agent"
-)
-
-# 修复: 标准路径也通过 safe_remove 删除，统一安全检查
-for dir in "${directories[@]}"; do
-    if [ -d "$dir" ]; then
-        echo -e "${YELLOW}删除目录: $dir${NC}"
-        echo -e "${YELLOW}Removing directory: $dir${NC}"
-        safe_remove "$dir" "$dir (standard install dir)"
-    fi
-done
-
-for bin in "${binaries[@]}"; do
-    if [ -f "$bin" ]; then
-        echo -e "${YELLOW}删除二进制文件: $bin${NC}"
-        echo -e "${YELLOW}Removing binary file: $bin${NC}"
-        safe_remove "$bin" "$bin (standard binary)"
-    fi
-done
-
-# 步骤6.5: 删除智能追踪到的非标准路径
-if [ ${#unique_paths[@]} -gt 0 ]; then
-    echo -e "\n${CYAN}[步骤6.5] 🎯 清理智能追踪到的路径...${NC}"
-    echo -e "${CYAN}[Step6.5] 🎯 Cleaning tracked paths...${NC}"
-
-    for path in "${!unique_paths[@]}"; do
-        if [ -e "$path" ] || [ -L "$path" ]; then
-            safe_remove "$path"
-        fi
-    done
-fi
-
-# 步骤7: 查找和删除所有相关文件（全局搜索）
-echo -e "\n${BLUE}[步骤7] 查找并删除所有相关文件（全局搜索）...${NC}"
-echo -e "${BLUE}[Step7] Finding and removing all related files (global search)...${NC}"
-echo -e "${YELLOW}正在搜索系统中的哪吒探针相关文件...${NC}"
-echo -e "${YELLOW}Searching for Nezha Agent related files in the system...${NC}"
-
-# 创建临时文件保存查找结果
-temp_file=$(mktemp) || {
-    echo -e "${RED}[错误] 无法创建临时文件，请检查 /tmp 权限${NC}"
-    echo -e "${RED}[Error] Failed to create temporary file, check /tmp permissions${NC}"
-    exit 1
-}
-# 修复: 添加 trap 确保 Ctrl+C 中断时也清理临时文件
-trap 'rm -f "$temp_file"' EXIT
-
-# 使用 find -iname 进行大小写不敏感的文件名匹配（比 find | grep 更高效且一致）
-# 安全: 排除 Docker/containerd 运行时内部存储，防止误伤其他容器数据
-find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
-    \( -path /var/lib/docker -prune \) -o \
-    \( -path /var/lib/containerd -prune \) -o \
-    \( -iname "*nezha*" -print \) 2>/dev/null > "$temp_file"
-
-if [ -s "$temp_file" ]; then
-    echo -e "${YELLOW}发现以下相关文件:${NC}"
-    echo -e "${YELLOW}Found the following related files:${NC}"
-    cat "$temp_file"
-
-    echo -e "\n${YELLOW}是否删除这些文件? [y/N] ${NC}"
-    echo -e "${YELLOW}Would you like to delete these files? [y/N] ${NC}"
-    # 修复: 从 /dev/tty 读取，确保 curl-pipe 场景下交互正常
-    read -r response </dev/tty
-    if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-        while IFS= read -r file; do
-            safe_remove "$file"
-        done < "$temp_file"
-        echo -e "${GREEN}文件已删除${NC}"
-        echo -e "${GREEN}Files removed${NC}"
+    # 步骤1: 检查和显示系统中的nezha进程
+    echo -e "\n${BLUE}[步骤1] 检查哪吒探针进程...${NC}"
+    echo -e "${BLUE}[Step1] Checking Nezha Agent processes...${NC}"
+    ps_result=$(ps aux | grep -E "[n]ezha-agent")
+    if [ -n "$ps_result" ]; then
+        echo -e "${YELLOW}发现哪吒探针进程:${NC}"
+        echo -e "${YELLOW}Found Nezha Agent processes:${NC}"
+        echo "$ps_result"
     else
-        echo -e "${YELLOW}跳过删除文件${NC}"
-        echo -e "${YELLOW}Skipping file removal${NC}"
+        echo -e "${GREEN}未发现哪吒探针进程${NC}"
+        echo -e "${GREEN}No Nezha Agent processes found${NC}"
     fi
-else
-    echo -e "${GREEN}未发现相关文件${NC}"
-    echo -e "${GREEN}No related files found${NC}"
-fi
 
-# 步骤8: 重新加载systemd
-echo -e "\n${BLUE}[步骤8] 重新加载systemd配置...${NC}"
-echo -e "${BLUE}[Step8] Reloading systemd configuration...${NC}"
-systemctl daemon-reload 2>/dev/null
-echo -e "${GREEN}systemd配置已重新加载${NC}"
-echo -e "${GREEN}systemd configuration reloaded${NC}"
+    # 步骤1.5: 智能路径追踪 - 通过进程找到所有相关路径
+    echo -e "\n${CYAN}[步骤1.5] 🔍 智能路径追踪...${NC}"
+    echo -e "${CYAN}[Step1.5] 🔍 Intelligent path tracking...${NC}"
 
-# 步骤9: 检查Docker容器（使用原生过滤器 + 防御性逐容器验证）
-echo -e "\n${BLUE}[步骤9] 检查相关Docker容器...${NC}"
-echo -e "${BLUE}[Step9] Checking related Docker containers...${NC}"
-if command -v docker &> /dev/null; then
-    # 使用关联数组收集并自动去重: key=container_id, value=name|image
-    declare -A nezha_container_map
-    # 定义一个 tab 字符用于 IFS 分隔
-    TAB_CHAR=$(printf '\t')
+    # 通过进程追踪可执行文件路径
+    if pgrep -f "[n]ezha-agent" >/dev/null; then
+        echo -e "${YELLOW}正在追踪运行中的进程路径...${NC}"
+        echo -e "${YELLOW}Tracking running process paths...${NC}"
 
-    # 方法1: Docker 原生过滤器 — 匹配容器名包含 "nezha" 的容器（最安全、最高效）
-    while IFS="$TAB_CHAR" read -r cid cname cimage; do
-        [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
-    done < <(docker ps -a --filter "name=*nezha*" --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null)
+        while IFS= read -r proc_path; do
+            if [ -n "$proc_path" ] && [ -f "$proc_path" ]; then
+                TRACKED_PATHS+=("$proc_path")
+                parent_dir=$(dirname "$proc_path")
 
-    # 方法2: grep 补充匹配 — 镜像名含 nezha-agent 或 nezha: 的容器
-    while IFS="$TAB_CHAR" read -r cid cname cimage; do
-        [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
-    done < <(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:")
+                if ! is_protected_dir "$parent_dir"; then
+                    TRACKED_PATHS+=("$parent_dir")
+                fi
 
-    if [ ${#nezha_container_map[@]} -gt 0 ]; then
-        echo -e "${YELLOW}发现以下相关Docker容器:${NC}"
-        echo -e "${YELLOW}Found the following related Docker containers:${NC}"
-        for cid in "${!nezha_container_map[@]}"; do
-            IFS='|' read -r cname cimage <<< "${nezha_container_map[$cid]}"
-            printf "  %s\t%s\t%s\n" "$cid" "$cname" "$cimage"
+                echo -e "${CYAN}  → 追踪到: $proc_path${NC}"
+            fi
+        done < <(pgrep -f "[n]ezha-agent" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
+    fi
+
+    # 通过systemd服务追踪路径
+    if systemctl list-units --type=service --all 2>/dev/null | grep -qiE "nezha-agent|nezha\.service"; then
+        echo -e "${YELLOW}正在分析systemd服务配置...${NC}"
+        echo -e "${YELLOW}Analyzing systemd service configs...${NC}"
+
+        while IFS= read -r service_file; do
+            if [ -f "$service_file" ]; then
+                exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+]*//' | awk '{print $1}')
+                if [ -n "$exec_start" ] && [ -f "$exec_start" ]; then
+                    real_path=$(realpath "$exec_start" 2>/dev/null || readlink -f "$exec_start" 2>/dev/null)
+                    if [ -n "$real_path" ]; then
+                        TRACKED_PATHS+=("$real_path")
+                        parent_dir=$(dirname "$real_path")
+                        if ! is_protected_dir "$parent_dir"; then
+                            TRACKED_PATHS+=("$parent_dir")
+                        fi
+                        echo -e "${CYAN}  → 从服务追踪到: $real_path${NC}"
+                    fi
+                fi
+
+                working_dir=$(grep -E "^WorkingDirectory=" "$service_file" | sed 's/^WorkingDirectory=//' | xargs)
+                if [ -n "$working_dir" ] && [ -d "$working_dir" ]; then
+                    real_path=$(realpath "$working_dir" 2>/dev/null || readlink -f "$working_dir" 2>/dev/null)
+                    if [ -n "$real_path" ] && ! is_protected_dir "$real_path"; then
+                        TRACKED_PATHS+=("$real_path")
+                        echo -e "${CYAN}  → 工作目录: $real_path${NC}"
+                    fi
+                fi
+            fi
+        done < <(find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) 2>/dev/null)
+    fi
+
+    # 去重并显示所有追踪到的路径
+    if [ ${#TRACKED_PATHS[@]} -gt 0 ]; then
+        for path in "${TRACKED_PATHS[@]}"; do
+            unique_paths["$path"]=1
         done
 
-        echo -e "${YELLOW}是否停止并删除这些容器? [y/N] ${NC}"
-        echo -e "${YELLOW}Would you like to stop and remove these containers? [y/N] ${NC}"
+        echo -e "\n${GREEN}✓ 智能追踪发现以下安装路径:${NC}"
+        echo -e "${GREEN}✓ Intelligent tracking found these installation paths:${NC}"
+        for path in "${!unique_paths[@]}"; do
+            if [ -e "$path" ]; then
+                echo -e "${YELLOW}  📍 $path${NC}"
+            fi
+        done
+    else
+        echo -e "${GREEN}未通过进程追踪到特殊安装路径${NC}"
+        echo -e "${GREEN}No special installation paths tracked from processes${NC}"
+    fi
+
+    # 步骤2: 检查定时任务（精确匹配nezha-agent）
+    echo -e "\n${BLUE}[步骤2] 检查相关定时任务...${NC}"
+    echo -e "${BLUE}[Step2] Checking related cron jobs...${NC}"
+    cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-agent|/nezha/" || echo "No crontab found")
+    if [ "$cron_result" != "No crontab found" ]; then
+        echo -e "${YELLOW}发现相关定时任务:${NC}"
+        echo -e "${YELLOW}Found related cron jobs:${NC}"
+        echo "$cron_result"
+
+        echo -e "${YELLOW}正在移除相关定时任务...${NC}"
+        echo -e "${YELLOW}Removing related cron jobs...${NC}"
+        crontab -l 2>/dev/null | grep -v -iE "nezha-agent|/nezha/" | crontab -
+        echo -e "${GREEN}定时任务清理完成${NC}"
+        echo -e "${GREEN}Cron jobs cleaned${NC}"
+    else
+        echo -e "${GREEN}未发现相关定时任务${NC}"
+        echo -e "${GREEN}No related cron jobs found${NC}"
+    fi
+
+    # 步骤3: 停止并禁用所有nezha-agent服务（精确匹配）
+    echo -e "\n${BLUE}[步骤3] 停止并禁用所有哪吒探针服务...${NC}"
+    echo -e "${BLUE}[Step3] Stopping and disabling all Nezha Agent services...${NC}"
+    nezha_services=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
+    if [ -n "$nezha_services" ]; then
+        echo -e "${YELLOW}发现以下哪吒探针服务:${NC}"
+        echo -e "${YELLOW}Found the following Nezha Agent services:${NC}"
+        echo "$nezha_services"
+
+        for service in $nezha_services; do
+            echo -e "${YELLOW}停止并禁用 $service...${NC}"
+            echo -e "${YELLOW}Stopping and disabling $service...${NC}"
+            systemctl stop "$service" 2>/dev/null
+            systemctl disable "$service" 2>/dev/null
+        done
+        echo -e "${GREEN}所有服务已停止并禁用${NC}"
+        echo -e "${GREEN}All services stopped and disabled${NC}"
+    else
+        echo -e "${GREEN}未发现哪吒探针服务${NC}"
+        echo -e "${GREEN}No Nezha Agent services found${NC}"
+    fi
+
+    # 步骤4: 杀死所有相关进程
+    echo -e "\n${BLUE}[步骤4] 强制终止所有哪吒探针进程...${NC}"
+    echo -e "${BLUE}[Step4] Forcefully terminating all Nezha Agent processes...${NC}"
+    if pgrep -f "[n]ezha-agent" >/dev/null; then
+        echo -e "${YELLOW}正在终止进程...${NC}"
+        echo -e "${YELLOW}Terminating processes...${NC}"
+        pkill -9 -f "[n]ezha-agent"
+        sleep 1
+        echo -e "${GREEN}进程已终止${NC}"
+        echo -e "${GREEN}Processes terminated${NC}"
+    else
+        echo -e "${GREEN}没有需要终止的进程${NC}"
+        echo -e "${GREEN}No processes to terminate${NC}"
+    fi
+
+    # 步骤5: 删除所有服务文件（精确匹配）
+    echo -e "\n${BLUE}[步骤5] 删除所有服务文件...${NC}"
+    echo -e "${BLUE}[Step5] Removing all service files...${NC}"
+    service_files=$(find /etc/systemd/system/ -type f \( -name "*nezha-agent*" -o -name "*nezha.service*" \) 2>/dev/null)
+    if [ -n "$service_files" ]; then
+        echo -e "${YELLOW}发现以下服务文件:${NC}"
+        echo -e "${YELLOW}Found the following service files:${NC}"
+        echo "$service_files"
+
+        echo -e "${YELLOW}删除服务文件...${NC}"
+        echo -e "${YELLOW}Removing service files...${NC}"
+        while IFS= read -r svc_file; do
+            safe_remove "$svc_file" "$svc_file (systemd unit)"
+        done <<< "$service_files"
+        echo -e "${GREEN}服务文件已删除${NC}"
+        echo -e "${GREEN}Service files removed${NC}"
+    else
+        echo -e "${GREEN}未发现服务文件${NC}"
+        echo -e "${GREEN}No service files found${NC}"
+    fi
+
+    # 步骤6: 删除标准位置的二进制文件和目录
+    echo -e "\n${BLUE}[步骤6] 删除标准位置的二进制文件和目录...${NC}"
+    echo -e "${BLUE}[Step6] Removing binaries and directories in standard locations...${NC}"
+
+    directories=(
+        "/opt/nezha"
+        "/opt/nezha-agent"
+        "/usr/local/nezha"
+    )
+
+    binaries=(
+        "/usr/local/bin/nezha-agent"
+        "/usr/bin/nezha-agent"
+        "/usr/sbin/nezha-agent"
+        "/bin/nezha-agent"
+    )
+
+    for dir in "${directories[@]}"; do
+        if [ -d "$dir" ]; then
+            echo -e "${YELLOW}删除目录: $dir${NC}"
+            echo -e "${YELLOW}Removing directory: $dir${NC}"
+            safe_remove "$dir" "$dir (standard install dir)"
+        fi
+    done
+
+    for bin in "${binaries[@]}"; do
+        if [ -f "$bin" ]; then
+            echo -e "${YELLOW}删除二进制文件: $bin${NC}"
+            echo -e "${YELLOW}Removing binary file: $bin${NC}"
+            safe_remove "$bin" "$bin (standard binary)"
+        fi
+    done
+
+    # 步骤6.5: 删除智能追踪到的非标准路径
+    if [ ${#unique_paths[@]} -gt 0 ]; then
+        echo -e "\n${CYAN}[步骤6.5] 🎯 清理智能追踪到的路径...${NC}"
+        echo -e "${CYAN}[Step6.5] 🎯 Cleaning tracked paths...${NC}"
+
+        for path in "${!unique_paths[@]}"; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+                safe_remove "$path"
+            fi
+        done
+    fi
+
+    # 步骤7: 查找和删除所有相关文件（全局搜索）
+    echo -e "\n${BLUE}[步骤7] 查找并删除所有相关文件（全局搜索）...${NC}"
+    echo -e "${BLUE}[Step7] Finding and removing all related files (global search)...${NC}"
+    echo -e "${YELLOW}正在搜索系统中的哪吒探针相关文件...${NC}"
+    echo -e "${YELLOW}Searching for Nezha Agent related files in the system...${NC}"
+
+    temp_file=$(mktemp) || {
+        echo -e "${RED}[错误] 无法创建临时文件，请检查 /tmp 权限${NC}"
+        echo -e "${RED}[Error] Failed to create temporary file, check /tmp permissions${NC}"
+        exit 1
+    }
+    trap 'rm -f "$temp_file"' EXIT
+
+    find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
+        \( -path /var/lib/docker -prune \) -o \
+        \( -path /var/lib/containerd -prune \) -o \
+        \( -iname "*nezha*" -print \) 2>/dev/null > "$temp_file"
+
+    if [ -s "$temp_file" ]; then
+        echo -e "${YELLOW}发现以下相关文件:${NC}"
+        echo -e "${YELLOW}Found the following related files:${NC}"
+        cat "$temp_file"
+
+        echo -e "\n${YELLOW}是否删除这些文件? [y/N] ${NC}"
+        echo -e "${YELLOW}Would you like to delete these files? [y/N] ${NC}"
         read -r response </dev/tty
         if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            for cid in "${!nezha_container_map[@]}"; do
-                IFS='|' read -r cname cimage <<< "${nezha_container_map[$cid]}"
-
-                # 防御性验证: 通过 docker inspect 再次确认容器名或镜像名含 "nezha"
-                verify_name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-                verify_image=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-
-                if [[ "$verify_name" == *nezha* ]] || [[ "$verify_image" == *nezha* ]]; then
-                    echo -e "${YELLOW}停止并删除容器: $cid ($cname) [镜像: $cimage]${NC}"
-                    echo -e "${YELLOW}Stopping and removing container: $cid ($cname) [Image: $cimage]${NC}"
-                    docker stop "$cid" 2>/dev/null
-                    docker rm "$cid" 2>/dev/null
-                else
-                    echo -e "${RED}⚠️  容器 $cid ($cname) 未通过 nezha 验证，跳过删除${NC}"
-                    echo -e "${RED}⚠️  Container $cid ($cname) failed nezha verification, skipping${NC}"
-                fi
-            done
-            echo -e "${GREEN}容器已清理${NC}"
-            echo -e "${GREEN}Containers cleaned${NC}"
+            while IFS= read -r file; do
+                safe_remove "$file"
+            done < "$temp_file"
+            echo -e "${GREEN}文件已删除${NC}"
+            echo -e "${GREEN}Files removed${NC}"
         else
-            echo -e "${YELLOW}跳过容器清理${NC}"
-            echo -e "${YELLOW}Skipping container cleanup${NC}"
+            echo -e "${YELLOW}跳过删除文件${NC}"
+            echo -e "${YELLOW}Skipping file removal${NC}"
         fi
     else
-        echo -e "${GREEN}未发现相关Docker容器${NC}"
-        echo -e "${GREEN}No related Docker containers found${NC}"
+        echo -e "${GREEN}未发现相关文件${NC}"
+        echo -e "${GREEN}No related files found${NC}"
     fi
-else
-    echo -e "${YELLOW}Docker未安装，跳过检查${NC}"
-    echo -e "${YELLOW}Docker not installed, skipping check${NC}"
-fi
 
-# 步骤10: 最终检查
-echo -e "\n${BLUE}[步骤10] 最终检查...${NC}"
-echo -e "${BLUE}[Step10] Final check...${NC}"
+    # 步骤8: 重新加载systemd
+    echo -e "\n${BLUE}[步骤8] 重新加载systemd配置...${NC}"
+    echo -e "${BLUE}[Step8] Reloading systemd configuration...${NC}"
+    systemctl daemon-reload 2>/dev/null
+    echo -e "${GREEN}systemd配置已重新加载${NC}"
+    echo -e "${GREEN}systemd configuration reloaded${NC}"
 
-# 检查是否还有任何nezha进程
-# 修复: 使用 [n]ezha-agent 括号技巧排除脚本自身
-if pgrep -f "[n]ezha-agent" >/dev/null; then
-    echo -e "${RED}⚠️  警告: 仍然检测到哪吒探针进程!${NC}"
-    echo -e "${RED}⚠️  Warning: Nezha Agent processes still detected!${NC}"
-    ps aux | grep -E "[n]ezha-agent"
-else
-    echo -e "${GREEN}✓ 未检测到任何哪吒探针进程${NC}"
-    echo -e "${GREEN}✓ No Nezha Agent processes detected${NC}"
-fi
+    # 步骤9: 检查Docker容器（Agent模式 — 只处理 Agent 容器）
+    echo -e "\n${BLUE}[步骤9] 检查相关Docker容器...${NC}"
+    echo -e "${BLUE}[Step9] Checking related Docker containers...${NC}"
+    if command -v docker &> /dev/null; then
+        declare -A nezha_container_map
+        TAB_CHAR=$(printf '\t')
 
-# 检查是否还有任何服务
-nezha_services_remaining=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
-if [ -n "$nezha_services_remaining" ]; then
-    echo -e "${RED}⚠️  警告: 仍然检测到哪吒探针服务!${NC}"
-    echo -e "${RED}⚠️  Warning: Nezha Agent services still detected!${NC}"
-    echo "$nezha_services_remaining"
-else
-    echo -e "${GREEN}✓ 未检测到任何哪吒探针服务${NC}"
-    echo -e "${GREEN}✓ No Nezha Agent services detected${NC}"
-fi
+        # 方法1: Docker 原生过滤器 — 精确匹配 Agent 容器名
+        while IFS="$TAB_CHAR" read -r cid cname cimage; do
+            [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
+        done < <(docker ps -a --filter "name=*nezha-agent*" --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null)
 
-# 检查是否还有残留文件
-remaining_files=$(find /root /home /opt /usr/local /data /www /var/log /var/lib 2>/dev/null | grep -i "nezha" | head -10)
-if [ -n "$remaining_files" ]; then
-    echo -e "${YELLOW}⚠️  发现一些可能的残留文件:${NC}"
-    echo -e "${YELLOW}⚠️  Found some possible remaining files:${NC}"
-    echo "$remaining_files"
-    echo -e "${YELLOW}如需手动清理，请检查这些文件${NC}"
-    echo -e "${YELLOW}Please check these files for manual cleanup if needed${NC}"
-else
-    echo -e "${GREEN}✓ 未发现任何残留文件${NC}"
-    echo -e "${GREEN}✓ No remaining files detected${NC}"
-fi
+        # 方法2: grep 补充匹配 — 镜像名含 nezha-agent 或 nezha: 的容器
+        while IFS="$TAB_CHAR" read -r cid cname cimage; do
+            [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
+        done < <(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:")
+
+        if [ ${#nezha_container_map[@]} -gt 0 ]; then
+            echo -e "${YELLOW}发现以下相关Docker容器:${NC}"
+            echo -e "${YELLOW}Found the following related Docker containers:${NC}"
+            for cid in "${!nezha_container_map[@]}"; do
+                IFS='|' read -r cname cimage <<< "${nezha_container_map[$cid]}"
+                printf "  %s\t%s\t%s\n" "$cid" "$cname" "$cimage"
+            done
+
+            echo -e "${YELLOW}是否停止并删除这些容器? [y/N] ${NC}"
+            echo -e "${YELLOW}Would you like to stop and remove these containers? [y/N] ${NC}"
+            read -r response </dev/tty
+            if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+                for cid in "${!nezha_container_map[@]}"; do
+                    IFS='|' read -r cname cimage <<< "${nezha_container_map[$cid]}"
+
+                    verify_name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                    verify_image=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+                    if [[ "$verify_name" == *nezha* ]] || [[ "$verify_image" == *nezha* ]]; then
+                        echo -e "${YELLOW}停止并删除容器: $cid ($cname) [镜像: $cimage]${NC}"
+                        echo -e "${YELLOW}Stopping and removing container: $cid ($cname) [Image: $cimage]${NC}"
+                        docker stop "$cid" 2>/dev/null
+                        docker rm "$cid" 2>/dev/null
+                    else
+                        echo -e "${RED}⚠️  容器 $cid ($cname) 未通过 nezha 验证，跳过删除${NC}"
+                        echo -e "${RED}⚠️  Container $cid ($cname) failed nezha verification, skipping${NC}"
+                    fi
+                done
+                echo -e "${GREEN}容器已清理${NC}"
+                echo -e "${GREEN}Containers cleaned${NC}"
+            else
+                echo -e "${YELLOW}跳过容器清理${NC}"
+                echo -e "${YELLOW}Skipping container cleanup${NC}"
+            fi
+        else
+            echo -e "${GREEN}未发现相关Docker容器${NC}"
+            echo -e "${GREEN}No related Docker containers found${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Docker未安装，跳过检查${NC}"
+        echo -e "${YELLOW}Docker not installed, skipping check${NC}"
+    fi
+
+    # 步骤10: 最终检查
+    echo -e "\n${BLUE}[步骤10] 最终检查...${NC}"
+    echo -e "${BLUE}[Step10] Final check...${NC}"
+
+    if pgrep -f "[n]ezha-agent" >/dev/null; then
+        echo -e "${RED}⚠️  警告: 仍然检测到哪吒探针进程!${NC}"
+        echo -e "${RED}⚠️  Warning: Nezha Agent processes still detected!${NC}"
+        ps aux | grep -E "[n]ezha-agent"
+    else
+        echo -e "${GREEN}✓ 未检测到任何哪吒探针进程${NC}"
+        echo -e "${GREEN}✓ No Nezha Agent processes detected${NC}"
+    fi
+
+    nezha_services_remaining=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-agent|nezha\.service" | awk '{print $1}')
+    if [ -n "$nezha_services_remaining" ]; then
+        echo -e "${RED}⚠️  警告: 仍然检测到哪吒探针服务!${NC}"
+        echo -e "${RED}⚠️  Warning: Nezha Agent services still detected!${NC}"
+        echo "$nezha_services_remaining"
+    else
+        echo -e "${GREEN}✓ 未检测到任何哪吒探针服务${NC}"
+        echo -e "${GREEN}✓ No Nezha Agent services detected${NC}"
+    fi
+
+    remaining_files=$(find /root /home /opt /usr/local /data /www /var/log /var/lib 2>/dev/null | grep -i "nezha" | head -10)
+    if [ -n "$remaining_files" ]; then
+        echo -e "${YELLOW}⚠️  发现一些可能的残留文件:${NC}"
+        echo -e "${YELLOW}⚠️  Found some possible remaining files:${NC}"
+        echo "$remaining_files"
+        echo -e "${YELLOW}如需手动清理，请检查这些文件${NC}"
+        echo -e "${YELLOW}Please check these files for manual cleanup if needed${NC}"
+    else
+        echo -e "${GREEN}✓ 未发现任何残留文件${NC}"
+        echo -e "${GREEN}✓ No remaining files detected${NC}"
+    fi
+
+    echo -e "\n${GREEN}✓ Agent (被控端) 清理完成!${NC}"
+    echo -e "${GREEN}✓ Agent (Controlled Endpoint) cleanup complete!${NC}"
+}
+
+# ==============================================================================
+#  cleanup_dashboard() — 卸载哪吒探针 Dashboard (主控端)
+#  12步安全清理流程，4层Docker纵深防御
+# ==============================================================================
+cleanup_dashboard() {
+    echo -e "\n${BLUE}=================================================================${NC}"
+    echo -e "${GREEN}        开始卸载哪吒探针 Dashboard (主控端)                     ${NC}"
+    echo -e "${GREEN}        Starting Nezha Dashboard (Control Panel) cleanup        ${NC}"
+    echo -e "${BLUE}=================================================================${NC}"
+
+    local -a TRACKED_PATHS
+    local -A unique_paths
+
+    # D1: 检查Dashboard进程（裸机 + Docker）
+    echo -e "\n${BLUE}[步骤D1] 检查哪吒探针Dashboard进程...${NC}"
+    echo -e "${BLUE}[Step D1] Checking Nezha Dashboard processes...${NC}"
+
+    local found_dashboard=false
+
+    # 检查裸机进程
+    ps_result=$(ps aux | grep -E "[n]ezha-dashboard")
+    if [ -n "$ps_result" ]; then
+        found_dashboard=true
+        echo -e "${YELLOW}发现Dashboard裸机进程:${NC}"
+        echo -e "${YELLOW}Found Dashboard bare-metal processes:${NC}"
+        echo "$ps_result"
+    fi
+
+    # 检查Dashboard Docker容器（排除 Agent 容器）
+    if command -v docker &> /dev/null; then
+        docker_ps=$(docker ps --filter "name=*nezha*" --format "{{.Names}}\t{{.Status}}\t{{.Image}}" 2>/dev/null | grep -vi "nezha-agent")
+        if [ -n "$docker_ps" ]; then
+            found_dashboard=true
+            echo -e "${YELLOW}发现Dashboard Docker容器:${NC}"
+            echo -e "${YELLOW}Found Dashboard Docker containers:${NC}"
+            echo "$docker_ps"
+        fi
+    fi
+
+    if [ "$found_dashboard" = false ]; then
+        echo -e "${GREEN}未发现Dashboard进程${NC}"
+        echo -e "${GREEN}No Dashboard processes found${NC}"
+    fi
+
+    # D1也检查 nezha.service (非agent的通用nezha服务)
+    if systemctl list-units --type=service --all 2>/dev/null | grep -qi "nezha-dashboard\|nezha\.service"; then
+        echo -e "${YELLOW}发现Dashboard相关systemd服务:${NC}"
+        systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-dashboard|nezha\.service"
+    fi
+
+    # D2: 智能路径追踪 — Dashboard版本
+    echo -e "\n${CYAN}[步骤D2] 🔍 智能路径追踪 (Dashboard)...${NC}"
+    echo -e "${CYAN}[Step D2] 🔍 Intelligent path tracking (Dashboard)...${NC}"
+
+    # 追踪Dashboard裸机进程
+    if pgrep -f "[n]ezha-dashboard" >/dev/null; then
+        echo -e "${YELLOW}正在追踪Dashboard进程路径...${NC}"
+        echo -e "${YELLOW}Tracking Dashboard process paths...${NC}"
+
+        while IFS= read -r proc_path; do
+            if [ -n "$proc_path" ] && [ -f "$proc_path" ]; then
+                TRACKED_PATHS+=("$proc_path")
+                parent_dir=$(dirname "$proc_path")
+                if ! is_protected_dir "$parent_dir"; then
+                    TRACKED_PATHS+=("$parent_dir")
+                fi
+                echo -e "${CYAN}  → 追踪到: $proc_path${NC}"
+            fi
+        done < <(pgrep -f "[n]ezha-dashboard" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
+    fi
+
+    # 追踪systemd服务中的Dashboard相关配置
+    if systemctl list-units --type=service --all 2>/dev/null | grep -qiE "nezha-dashboard|nezha\.service"; then
+        echo -e "${YELLOW}正在分析Dashboard systemd服务配置...${NC}"
+        echo -e "${YELLOW}Analyzing Dashboard systemd service configs...${NC}"
+
+        # Dashboard 专用匹配：*nezha-dashboard* 和 *nezha.service*（排除 *nezha-agent*）
+        while IFS= read -r service_file; do
+            if [ -f "$service_file" ]; then
+                exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+]*//' | awk '{print $1}')
+                if [ -n "$exec_start" ] && [ -f "$exec_start" ]; then
+                    real_path=$(realpath "$exec_start" 2>/dev/null || readlink -f "$exec_start" 2>/dev/null)
+                    if [ -n "$real_path" ]; then
+                        TRACKED_PATHS+=("$real_path")
+                        parent_dir=$(dirname "$real_path")
+                        if ! is_protected_dir "$parent_dir"; then
+                            TRACKED_PATHS+=("$parent_dir")
+                        fi
+                        echo -e "${CYAN}  → 从服务追踪到: $real_path${NC}"
+                    fi
+                fi
+
+                working_dir=$(grep -E "^WorkingDirectory=" "$service_file" | sed 's/^WorkingDirectory=//' | xargs)
+                if [ -n "$working_dir" ] && [ -d "$working_dir" ]; then
+                    real_path=$(realpath "$working_dir" 2>/dev/null || readlink -f "$working_dir" 2>/dev/null)
+                    if [ -n "$real_path" ] && ! is_protected_dir "$real_path"; then
+                        TRACKED_PATHS+=("$real_path")
+                        echo -e "${CYAN}  → 工作目录: $real_path${NC}"
+                    fi
+                fi
+            fi
+        done < <(find /etc/systemd/system/ -type f \( -name "*nezha-dashboard*" -o -name "*nezha.service*" \) ! -name "*nezha-agent*" 2>/dev/null)
+    fi
+
+    # 去重显示
+    if [ ${#TRACKED_PATHS[@]} -gt 0 ]; then
+        for path in "${TRACKED_PATHS[@]}"; do
+            unique_paths["$path"]=1
+        done
+
+        echo -e "\n${GREEN}✓ 智能追踪发现以下Dashboard安装路径:${NC}"
+        echo -e "${GREEN}✓ Intelligent tracking found these Dashboard paths:${NC}"
+        for path in "${!unique_paths[@]}"; do
+            if [ -e "$path" ]; then
+                echo -e "${YELLOW}  📍 $path${NC}"
+            fi
+        done
+    else
+        echo -e "${GREEN}未追踪到Dashboard特殊安装路径${NC}"
+        echo -e "${GREEN}No special Dashboard paths tracked${NC}"
+    fi
+
+    # D3: 检查/移除定时任务
+    echo -e "\n${BLUE}[步骤D3] 检查Dashboard相关定时任务...${NC}"
+    echo -e "${BLUE}[Step D3] Checking Dashboard-related cron jobs...${NC}"
+    cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-dashboard|/nezha/dashboard" || echo "No crontab found")
+    if [ "$cron_result" != "No crontab found" ]; then
+        echo -e "${YELLOW}发现Dashboard相关定时任务:${NC}"
+        echo -e "${YELLOW}Found Dashboard-related cron jobs:${NC}"
+        echo "$cron_result"
+
+        echo -e "${YELLOW}正在移除Dashboard相关定时任务...${NC}"
+        echo -e "${YELLOW}Removing Dashboard-related cron jobs...${NC}"
+        crontab -l 2>/dev/null | grep -v -iE "nezha-dashboard|/nezha/dashboard" | crontab -
+        echo -e "${GREEN}定时任务清理完成${NC}"
+        echo -e "${GREEN}Cron jobs cleaned${NC}"
+    else
+        echo -e "${GREEN}未发现Dashboard相关定时任务${NC}"
+        echo -e "${GREEN}No Dashboard-related cron jobs found${NC}"
+    fi
+
+    # D4: 停止并禁用Dashboard服务
+    echo -e "\n${BLUE}[步骤D4] 停止并禁用Dashboard相关服务...${NC}"
+    echo -e "${BLUE}[Step D4] Stopping and disabling Dashboard services...${NC}"
+    # 匹配 *nezha-dashboard* 和 *nezha.service*，排除 *nezha-agent*
+    dash_services=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-dashboard|nezha\.service" | grep -vi "nezha-agent" | awk '{print $1}')
+    if [ -n "$dash_services" ]; then
+        echo -e "${YELLOW}发现以下Dashboard相关服务:${NC}"
+        echo -e "${YELLOW}Found the following Dashboard services:${NC}"
+        echo "$dash_services"
+
+        for service in $dash_services; do
+            echo -e "${YELLOW}停止并禁用 $service...${NC}"
+            echo -e "${YELLOW}Stopping and disabling $service...${NC}"
+            systemctl stop "$service" 2>/dev/null
+            systemctl disable "$service" 2>/dev/null
+        done
+        echo -e "${GREEN}Dashboard服务已停止并禁用${NC}"
+        echo -e "${GREEN}Dashboard services stopped and disabled${NC}"
+    else
+        echo -e "${GREEN}未发现Dashboard相关服务${NC}"
+        echo -e "${GREEN}No Dashboard services found${NC}"
+    fi
+
+    # D5: 强制终止Dashboard进程
+    echo -e "\n${BLUE}[步骤D5] 强制终止Dashboard进程...${NC}"
+    echo -e "${BLUE}[Step D5] Forcefully terminating Dashboard processes...${NC}"
+    if pgrep -f "[n]ezha-dashboard" >/dev/null; then
+        echo -e "${YELLOW}正在终止Dashboard进程...${NC}"
+        echo -e "${YELLOW}Terminating Dashboard processes...${NC}"
+        pkill -9 -f "[n]ezha-dashboard"
+        sleep 1
+        echo -e "${GREEN}Dashboard进程已终止${NC}"
+        echo -e "${GREEN}Dashboard processes terminated${NC}"
+    else
+        echo -e "${GREEN}没有需要终止的Dashboard进程${NC}"
+        echo -e "${GREEN}No Dashboard processes to terminate${NC}"
+    fi
+
+    # D6: 删除Dashboard服务文件
+    echo -e "\n${BLUE}[步骤D6] 删除Dashboard服务文件...${NC}"
+    echo -e "${BLUE}[Step D6] Removing Dashboard service files...${NC}"
+    # 匹配 Dashboard 和通用 nezha 服务文件，排除 Agent
+    dash_svc_files=$(find /etc/systemd/system/ -type f \( -name "*nezha-dashboard*" -o -name "*nezha.service*" \) ! -name "*nezha-agent*" 2>/dev/null)
+    if [ -n "$dash_svc_files" ]; then
+        echo -e "${YELLOW}发现以下Dashboard服务文件:${NC}"
+        echo -e "${YELLOW}Found the following Dashboard service files:${NC}"
+        echo "$dash_svc_files"
+
+        echo -e "${YELLOW}删除Dashboard服务文件...${NC}"
+        echo -e "${YELLOW}Removing Dashboard service files...${NC}"
+        while IFS= read -r svc_file; do
+            safe_remove "$svc_file" "$svc_file (Dashboard systemd unit)"
+        done <<< "$dash_svc_files"
+        echo -e "${GREEN}Dashboard服务文件已删除${NC}"
+        echo -e "${GREEN}Dashboard service files removed${NC}"
+    else
+        echo -e "${GREEN}未发现Dashboard服务文件${NC}"
+        echo -e "${GREEN}No Dashboard service files found${NC}"
+    fi
+
+    # D7: 删除Dashboard标准位置的文件和目录
+    echo -e "\n${BLUE}[步骤D7] 删除Dashboard标准位置的目录和文件...${NC}"
+    echo -e "${BLUE}[Step D7] Removing Dashboard directories and files in standard locations...${NC}"
+
+    dash_directories=(
+        "/opt/nezha/dashboard"
+        "/opt/nezha-dashboard"
+        "/usr/local/nezha/dashboard"
+    )
+
+    dash_binaries=(
+        "/usr/local/bin/nezha-dashboard"
+        "/usr/bin/nezha-dashboard"
+        "/opt/nezha/dashboard/app"
+    )
+
+    for dir in "${dash_directories[@]}"; do
+        if [ -d "$dir" ]; then
+            echo -e "${YELLOW}删除Dashboard目录: $dir${NC}"
+            echo -e "${YELLOW}Removing Dashboard directory: $dir${NC}"
+            safe_remove "$dir" "$dir (Dashboard install dir)"
+        fi
+    done
+
+    for bin in "${dash_binaries[@]}"; do
+        if [ -f "$bin" ]; then
+            echo -e "${YELLOW}删除Dashboard二进制文件: $bin${NC}"
+            echo -e "${YELLOW}Removing Dashboard binary: $bin${NC}"
+            safe_remove "$bin" "$bin (Dashboard binary)"
+        fi
+    done
+
+    # 额外清理 docker-compose.yaml / .yml
+    for compose_file in /opt/nezha/dashboard/docker-compose.yaml /opt/nezha/dashboard/docker-compose.yml /opt/nezha/docker-compose.yaml /opt/nezha/docker-compose.yml; do
+        if [ -f "$compose_file" ]; then
+            safe_remove "$compose_file" "$compose_file (Docker Compose config)"
+        fi
+    done
+
+    # D8: 清理D2追踪到的路径
+    if [ ${#unique_paths[@]} -gt 0 ]; then
+        echo -e "\n${CYAN}[步骤D8] 🎯 清理Dashboard追踪到的路径...${NC}"
+        echo -e "${CYAN}[Step D8] 🎯 Cleaning tracked Dashboard paths...${NC}"
+
+        for path in "${!unique_paths[@]}"; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+                safe_remove "$path"
+            fi
+        done
+    fi
+
+    # D9: 全局 find 扫描 + 交互式确认
+    echo -e "\n${BLUE}[步骤D9] 查找并删除Dashboard相关文件（全局搜索）...${NC}"
+    echo -e "${BLUE}[Step D9] Finding and removing Dashboard-related files (global search)...${NC}"
+    echo -e "${YELLOW}正在搜索Dashboard相关文件...${NC}"
+    echo -e "${YELLOW}Searching for Dashboard-related files...${NC}"
+
+    temp_file=$(mktemp) || {
+        echo -e "${RED}[错误] 无法创建临时文件，请检查 /tmp 权限${NC}"
+        echo -e "${RED}[Error] Failed to create temporary file, check /tmp permissions${NC}"
+        exit 1
+    }
+    trap 'rm -f "$temp_file"' EXIT
+
+    find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
+        \( -path /var/lib/docker -prune \) -o \
+        \( -path /var/lib/containerd -prune \) -o \
+        \( -iname "*nezha*" -print \) 2>/dev/null > "$temp_file"
+
+    if [ -s "$temp_file" ]; then
+        echo -e "${YELLOW}发现以下Dashboard相关文件:${NC}"
+        echo -e "${YELLOW}Found the following Dashboard-related files:${NC}"
+        cat "$temp_file"
+
+        echo -e "\n${YELLOW}是否删除这些文件? [y/N] ${NC}"
+        echo -e "${YELLOW}Would you like to delete these files? [y/N] ${NC}"
+        read -r response </dev/tty
+        if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+            while IFS= read -r file; do
+                safe_remove "$file"
+            done < "$temp_file"
+            echo -e "${GREEN}文件已删除${NC}"
+            echo -e "${GREEN}Files removed${NC}"
+        else
+            echo -e "${YELLOW}跳过删除文件${NC}"
+            echo -e "${YELLOW}Skipping file removal${NC}"
+        fi
+    else
+        echo -e "${GREEN}未发现Dashboard相关文件${NC}"
+        echo -e "${GREEN}No Dashboard-related files found${NC}"
+    fi
+
+    # D10: Docker容器 + 镜像清理（4层纵深防御）
+    echo -e "\n${BLUE}[步骤D10] 检查并清理Dashboard Docker容器...${NC}"
+    echo -e "${BLUE}[Step D10] Checking and cleaning Dashboard Docker containers...${NC}"
+    if command -v docker &> /dev/null; then
+        declare -A dashboard_container_map
+        TAB_CHAR=$(printf '\t')
+
+        # === 第1层: Docker原生过滤器 — 捕获所有 nezha 容器 ===
+        while IFS="$TAB_CHAR" read -r cid cname cimage; do
+            [[ -n "$cid" ]] && dashboard_container_map["$cid"]="${cname}|${cimage}"
+        done < <(docker ps -a --filter "name=*nezha*" --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null)
+
+        # === 第1层补充: grep 补充匹配镜像名 ===
+        while IFS="$TAB_CHAR" read -r cid cname cimage; do
+            [[ -n "$cid" ]] && dashboard_container_map["$cid"]="${cname}|${cimage}"
+        done < <(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-dashboard|nezha:")
+
+        # === 第2层: 分类筛选 — 跳过 Agent 容器 ===
+        local skipped_agent=0
+        for cid in "${!dashboard_container_map[@]}"; do
+            IFS='|' read -r cname cimage <<< "${dashboard_container_map[$cid]}"
+            local cname_lower="${cname,,}"
+            if [[ "$cname_lower" == *nezha-agent* ]]; then
+                echo -e "${CYAN}  → 跳过Agent容器: $cname (Dashboard模式不处理Agent)${NC}"
+                echo -e "${CYAN}  → Skipping Agent container: $cname (not handled in Dashboard mode)${NC}"
+                unset 'dashboard_container_map[$cid]'
+                skipped_agent=$((skipped_agent + 1))
+            fi
+        done
+
+        if [ ${#dashboard_container_map[@]} -gt 0 ]; then
+            echo -e "${YELLOW}发现以下Dashboard相关Docker容器:${NC}"
+            echo -e "${YELLOW}Found the following Dashboard Docker containers:${NC}"
+            for cid in "${!dashboard_container_map[@]}"; do
+                IFS='|' read -r cname cimage <<< "${dashboard_container_map[$cid]}"
+                printf "  %s\t%s\t%s\n" "$cid" "$cname" "$cimage"
+            done
+
+            echo -e "\n${YELLOW}是否停止并删除这些容器? [y/N] ${NC}"
+            echo -e "${YELLOW}Would you like to stop and remove these containers? [y/N] ${NC}"
+            read -r response </dev/tty
+            if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+                for cid in "${!dashboard_container_map[@]}"; do
+                    IFS='|' read -r cname cimage <<< "${dashboard_container_map[$cid]}"
+
+                    # === 第3层: docker inspect 逐容器验证 ===
+                    verify_name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                    verify_image=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+                    if [[ "$verify_name" == *nezha* ]] || [[ "$verify_image" == *nezha* ]]; then
+                        echo -e "${YELLOW}停止并删除容器: $cid ($cname) [镜像: $cimage]${NC}"
+                        echo -e "${YELLOW}Stopping and removing container: $cid ($cname) [Image: $cimage]${NC}"
+                        docker stop "$cid" 2>/dev/null
+                        docker rm "$cid" 2>/dev/null
+                    else
+                        echo -e "${RED}⚠️  容器 $cid ($cname) 未通过 nezha 验证，跳过删除${NC}"
+                        echo -e "${RED}⚠️  Container $cid ($cname) failed nezha verification, skipping${NC}"
+                    fi
+                done
+                echo -e "${GREEN}Dashboard容器已清理${NC}"
+                echo -e "${GREEN}Dashboard containers cleaned${NC}"
+
+                # === 第4层: 镜像删除（二次确认） ===
+                nezha_images=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null | grep -iE "nezha")
+                if [ -n "$nezha_images" ]; then
+                    echo -e "\n${YELLOW}发现以下哪吒相关Docker镜像:${NC}"
+                    echo -e "${YELLOW}Found the following Nezha Docker images:${NC}"
+                    echo "$nezha_images"
+                    echo -e "\n${YELLOW}是否删除这些镜像? [y/N] ${NC}"
+                    echo -e "${YELLOW}Would you like to remove these images? [y/N] ${NC}"
+                    read -r img_response </dev/tty
+                    if [[ "$img_response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+                        # 提取镜像ID并删除
+                        echo "$nezha_images" | while IFS=$'\t' read -r img_tag img_id img_size; do
+                            if [ -n "$img_id" ]; then
+                                echo -e "${YELLOW}删除镜像: $img_tag ($img_id)${NC}"
+                                docker rmi "$img_id" 2>/dev/null || docker rmi "$img_tag" 2>/dev/null
+                            fi
+                        done
+                        echo -e "${GREEN}Dashboard镜像已删除${NC}"
+                        echo -e "${GREEN}Dashboard images removed${NC}"
+                    else
+                        echo -e "${YELLOW}跳过镜像删除（可稍后手动清理）${NC}"
+                        echo -e "${YELLOW}Skipping image removal (can be done manually later)${NC}"
+                    fi
+                else
+                    echo -e "${GREEN}未发现哪吒相关Docker镜像${NC}"
+                    echo -e "${GREEN}No Nezha Docker images found${NC}"
+                fi
+            else
+                echo -e "${YELLOW}跳过Dashboard容器清理${NC}"
+                echo -e "${YELLOW}Skipping Dashboard container cleanup${NC}"
+            fi
+        else
+            if [ $skipped_agent -gt 0 ]; then
+                echo -e "${GREEN}所有匹配容器均为Agent容器（已在Dashboard模式跳过）${NC}"
+                echo -e "${GREEN}All matched containers are Agent containers (skipped in Dashboard mode)${NC}"
+            else
+                echo -e "${GREEN}未发现Dashboard相关Docker容器${NC}"
+                echo -e "${GREEN}No Dashboard Docker containers found${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}Docker未安装，跳过检查${NC}"
+        echo -e "${YELLOW}Docker not installed, skipping check${NC}"
+    fi
+
+    # D11: systemctl daemon-reload
+    echo -e "\n${BLUE}[步骤D11] 重新加载systemd配置...${NC}"
+    echo -e "${BLUE}[Step D11] Reloading systemd configuration...${NC}"
+    systemctl daemon-reload 2>/dev/null
+    echo -e "${GREEN}systemd配置已重新加载${NC}"
+    echo -e "${GREEN}systemd configuration reloaded${NC}"
+
+    # D12: 最终验证
+    echo -e "\n${BLUE}[步骤D12] 最终检查...${NC}"
+    echo -e "${BLUE}[Step D12] Final check...${NC}"
+
+    # 检查Dashboard进程
+    if pgrep -f "[n]ezha-dashboard" >/dev/null; then
+        echo -e "${RED}⚠️  警告: 仍然检测到Dashboard进程!${NC}"
+        echo -e "${RED}⚠️  Warning: Dashboard processes still detected!${NC}"
+        ps aux | grep -E "[n]ezha-dashboard"
+    else
+        echo -e "${GREEN}✓ 未检测到任何Dashboard进程${NC}"
+        echo -e "${GREEN}✓ No Dashboard processes detected${NC}"
+    fi
+
+    # 检查Dashboard服务
+    dash_services_remaining=$(systemctl list-units --type=service --all 2>/dev/null | grep -iE "nezha-dashboard|nezha\.service" | grep -vi "nezha-agent" | awk '{print $1}')
+    if [ -n "$dash_services_remaining" ]; then
+        echo -e "${RED}⚠️  警告: 仍然检测到Dashboard服务!${NC}"
+        echo -e "${RED}⚠️  Warning: Dashboard services still detected!${NC}"
+        echo "$dash_services_remaining"
+    else
+        echo -e "${GREEN}✓ 未检测到任何Dashboard服务${NC}"
+        echo -e "${GREEN}✓ No Dashboard services detected${NC}"
+    fi
+
+    # 检查Docker容器
+    if command -v docker &> /dev/null; then
+        remaining_docker=$(docker ps -a --filter "name=*nezha*" --format "{{.Names}}" 2>/dev/null | grep -vi "nezha-agent" || true)
+        if [ -n "$remaining_docker" ]; then
+            echo -e "${YELLOW}⚠️  仍有Dashboard Docker容器残留:${NC}"
+            echo -e "${YELLOW}⚠️  Remaining Dashboard Docker containers:${NC}"
+            echo "$remaining_docker"
+        else
+            echo -e "${GREEN}✓ 未检测到Dashboard Docker容器${NC}"
+            echo -e "${GREEN}✓ No Dashboard Docker containers detected${NC}"
+        fi
+    fi
+
+    # 检查残留文件
+    remaining_files=$(find /root /home /opt /usr/local /data /www /var/log /var/lib 2>/dev/null | grep -i "nezha" | grep -v "nezha-agent" | head -10)
+    if [ -n "$remaining_files" ]; then
+        echo -e "${YELLOW}⚠️  发现一些可能的Dashboard残留文件:${NC}"
+        echo -e "${YELLOW}⚠️  Found some possible Dashboard remaining files:${NC}"
+        echo "$remaining_files"
+        echo -e "${YELLOW}如需手动清理，请检查这些文件${NC}"
+        echo -e "${YELLOW}Please check these files for manual cleanup if needed${NC}"
+    else
+        echo -e "${GREEN}✓ 未发现任何Dashboard残留文件${NC}"
+        echo -e "${GREEN}✓ No Dashboard remaining files detected${NC}"
+    fi
+
+    echo -e "\n${GREEN}✓ Dashboard (主控端) 清理完成!${NC}"
+    echo -e "${GREEN}✓ Dashboard (Control Panel) cleanup complete!${NC}"
+}
+
+# ==============================================================================
+#  模式调度 — 根据用户选择执行对应的清理函数
+# ==============================================================================
+
+case "$TARGET" in
+    agent)
+        cleanup_agent
+        ;;
+    dashboard)
+        cleanup_dashboard
+        ;;
+    both)
+        # Agent 先执行（处理 Agent 专属容器/文件），然后 Dashboard（处理剩余）
+        cleanup_agent
+        cleanup_dashboard
+        ;;
+esac
+
+# ==============================================================================
+#  结束横幅
+# ==============================================================================
 
 echo -e "\n${BLUE}=================================================================${NC}"
-echo -e "${GREEN}           哪吒探针Agent清理完成!                               ${NC}"
-echo -e "${GREEN}           Nezha Agent cleanup complete!                         ${NC}"
+echo -e "${GREEN}           哪吒探针清理完成!                                     ${NC}"
+echo -e "${GREEN}           Nezha cleanup complete!                               ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v1.4 修复: Docker原生过滤 + 容器逐验证 + 排除Docker存储${NC}"
-echo -e "${CYAN}v1.4 fixes: native filter + per-container verify + exclude Docker storage${NC}"
+echo -e "${CYAN}v2.0: 双模式卸载 — Agent + Dashboard 安全清理${NC}"
+echo -e "${CYAN}v2.0: Dual-mode — Agent + Dashboard safe uninstall${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 echo -e "${YELLOW}如果您在清理后仍然遇到问题，可能需要考虑系统重启。${NC}"
 echo -e "${YELLOW}If issues persist after cleanup, consider restarting your system.${NC}"
