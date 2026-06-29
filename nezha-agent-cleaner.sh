@@ -5,12 +5,21 @@
 #
 #      Project: https://github.com/everett7623/nezha-agent-cleaner
 #      Author: everett7623
-#      Version: 2.1 (Safety Enhanced)
+#      Version: 2.2 (Usage Counter + Bug Fixes)
 #
 #      Description: A safe utility to completely remove Nezha Agent and/or
 #                   Dashboard with intelligent path tracking and Docker
 #                   defense-in-depth. Supports three cleanup modes via
 #                   interactive menu.
+#
+#      Changelog v2.2:
+#      - Added: 使用统计计数器 — 主菜单显示累计运行次数 (visitor-badge.laobi.icu)
+#      - Fixed: trap覆盖 — Both模式下临时文件不再泄漏 (全局数组追踪)
+#      - Fixed: 符号链接保护 — safe_remove()检测指向保护目录的symlink
+#      - Fixed: ExecStart前缀 — 扩展剥离字符类支持 ':' 修饰符
+#      - Fixed: crontab边界 — 空crontab使用crontab -r, 无crontab命令时跳过
+#      - Fixed: 竞态条件 — pgrep路径追踪增加/proc/$pid存在性检查
+#      - Fixed: Docker匹配 — Agent模式grep收窄为nezha-agent, 不再误匹配Dashboard
 #
 #      Changelog v2.1:
 #      - Fixed: safe_remove() now skips media/document files (png, jpg, pdf, md, etc.)
@@ -51,14 +60,65 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# 使用统计全局变量
+STATS_TOTAL=""
+
+# 全局临时文件追踪数组 — 解决 Both 模式下 trap 覆盖导致临时文件泄漏的问题
+_TEMP_FILES=()
+
+# 注册临时文件到全局追踪数组
+register_temp_file() {
+    _TEMP_FILES+=("$1")
+}
+
+# 单一 EXIT trap — 清理所有注册的临时文件
+trap 'for _f in "${_TEMP_FILES[@]}"; do rm -f "$_f"; done' EXIT
+
+# ==============================================================================
+#  使用统计获取 — visitor-badge.laobi.icu 集成
+# ==============================================================================
+
+# 函数: 获取使用统计数据（静默失败，不影响脚本功能）
+fetch_usage_stats() {
+    local hit_url="https://visitor-badge.laobi.icu/badge?page_id=everett7623.nezha-cleaner&left_text=runs"
+    local response=""
+    local timeout=3
+
+    # HTTP 客户端选择: curl > wget > skip
+    if command -v curl &>/dev/null; then
+        response=$(curl -fsSL --max-time "$timeout" "$hit_url" 2>/dev/null) || return 1
+    elif command -v wget &>/dev/null; then
+        response=$(wget -qO- --timeout="$timeout" "$hit_url" 2>/dev/null) || return 1
+    else
+        return 1
+    fi
+
+    # 解析 SVG 中的计数文本
+    # visitor-badge.laobi.icu SVG 中计数以纯数字形式出现在最后一个 <text> 节点
+    local count_text
+    count_text=$(echo "$response" | grep -oE '[0-9]+' | sort -n | tail -1)
+    if [ -z "$count_text" ]; then
+        return 1
+    fi
+
+    STATS_TOTAL="$count_text"
+
+    # 验证结果是数字
+    if ! [[ "$STATS_TOTAL" =~ ^[0-9]+$ ]]; then
+        STATS_TOTAL=""
+        return 1
+    fi
+
+    return 0
+}
 
 # 打印运行时的欢迎横幅
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${GREEN}     哪吒探针清理脚本 v2.1 (安全增强)                         ${NC}"
-echo -e "${GREEN}     Nezha Cleaner v2.1 (Safety Enhanced)                      ${NC}"
+echo -e "${GREEN}     哪吒探针清理脚本 v2.2 (统计+修复)                         ${NC}"
+echo -e "${GREEN}     Nezha Cleaner v2.2 (Usage Counter + Bug Fixes)            ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v2.1: 启动菜单 — 可选卸载 Agent / Dashboard / 全部${NC}"
-echo -e "${CYAN}v2.1: Menu-driven — Agent / Dashboard / Both cleanup modes${NC}"
+echo -e "${CYAN}v2.2: 启动菜单 — 可选卸载 Agent / Dashboard / 全部${NC}"
+echo -e "${CYAN}v2.2: Menu-driven — Agent / Dashboard / Both cleanup modes${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # 检查是否为root用户
@@ -67,6 +127,9 @@ if [ "$(id -u)" != "0" ]; then
    echo -e "${RED}[Error] This script must be run as root!${NC}"
    exit 1
 fi
+
+# 获取使用统计（静默，≤3秒超时）
+fetch_usage_stats
 
 # ==============================================================================
 #  主菜单 — 选择清理模式
@@ -90,6 +153,10 @@ echo -e "     → Complete removal: Agent + Dashboard + Docker images"
 echo -e ""
 echo -e "${YELLOW}  4)${NC} ${GREEN}退出${NC} / Exit"
 echo -e ""
+if [ -n "$STATS_TOTAL" ]; then
+    echo -e "${CYAN}  📊 累计运行: ${STATS_TOTAL} 次${NC}"
+    echo -e ""
+fi
 echo -e "${BLUE}=================================================================${NC}"
 echo -ne "${YELLOW}请输入选项 (1-4) / Enter your choice (1-4): ${NC}"
 read -r CLEANUP_MODE </dev/tty
@@ -161,6 +228,17 @@ safe_remove() {
     # 检查路径是否存在（TOCTOU 缓解: 先解析再检查）
     if [ ! -e "$target" ] && [ ! -L "$target" ]; then
         return 0  # 已不存在，视为成功
+    fi
+
+    # 符号链接指向保护目录检查
+    if [ -L "$target" ]; then
+        local link_target
+        link_target=$(readlink -f "$target" 2>/dev/null || readlink "$target" 2>/dev/null)
+        if [ -n "$link_target" ] && is_protected_dir "$link_target"; then
+            echo -e "${RED}⚠️  跳过指向保护目录的符号链接: $desc → $link_target${NC}"
+            echo -e "${RED}⚠️  Skipping symlink pointing to protected directory: $desc → $link_target${NC}"
+            return 1
+        fi
     fi
 
     # 系统目录保护检查
@@ -250,7 +328,10 @@ cleanup_agent() {
 
                 echo -e "${CYAN}  → 追踪到: $proc_path${NC}"
             fi
-        done < <(pgrep -f "[n]ezha-agent" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
+        done < <(pgrep -f "[n]ezha-agent" 2>/dev/null | while read -r _pid; do
+            [ -d "/proc/$_pid" ] || continue
+            readlink -f "/proc/$_pid/exe" 2>/dev/null
+        done | sort -u)
     fi
 
     # 通过systemd服务追踪路径
@@ -260,7 +341,7 @@ cleanup_agent() {
 
         while IFS= read -r service_file; do
             if [ -f "$service_file" ]; then
-                exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+]*//' | awk '{print $1}')
+                exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+:]*//' | awk '{print $1}')
                 if [ -n "$exec_start" ] && [ -f "$exec_start" ]; then
                     real_path=$(realpath "$exec_start" 2>/dev/null || readlink -f "$exec_start" 2>/dev/null)
                     if [ -n "$real_path" ]; then
@@ -306,20 +387,31 @@ cleanup_agent() {
     # 步骤2: 检查定时任务（精确匹配nezha-agent）
     echo -e "\n${BLUE}[步骤2] 检查相关定时任务...${NC}"
     echo -e "${BLUE}[Step2] Checking related cron jobs...${NC}"
-    cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-agent|/nezha/" || echo "No crontab found")
-    if [ "$cron_result" != "No crontab found" ]; then
-        echo -e "${YELLOW}发现相关定时任务:${NC}"
-        echo -e "${YELLOW}Found related cron jobs:${NC}"
-        echo "$cron_result"
-
-        echo -e "${YELLOW}正在移除相关定时任务...${NC}"
-        echo -e "${YELLOW}Removing related cron jobs...${NC}"
-        crontab -l 2>/dev/null | grep -v -iE "nezha-agent|/nezha/" | crontab -
-        echo -e "${GREEN}定时任务清理完成${NC}"
-        echo -e "${GREEN}Cron jobs cleaned${NC}"
+    if ! command -v crontab &>/dev/null; then
+        echo -e "${GREEN}系统无 crontab 命令，跳过定时任务检查${NC}"
+        echo -e "${GREEN}No crontab command available, skipping cron check${NC}"
     else
-        echo -e "${GREEN}未发现相关定时任务${NC}"
-        echo -e "${GREEN}No related cron jobs found${NC}"
+        cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-agent|/nezha/" || echo "No crontab found")
+        if [ "$cron_result" != "No crontab found" ]; then
+            echo -e "${YELLOW}发现相关定时任务:${NC}"
+            echo -e "${YELLOW}Found related cron jobs:${NC}"
+            echo "$cron_result"
+
+            echo -e "${YELLOW}正在移除相关定时任务...${NC}"
+            echo -e "${YELLOW}Removing related cron jobs...${NC}"
+            local filtered
+            filtered=$(crontab -l 2>/dev/null | grep -v -iE "nezha-agent|/nezha/")
+            if [ -z "$filtered" ]; then
+                crontab -r 2>/dev/null
+            else
+                echo "$filtered" | crontab -
+            fi
+            echo -e "${GREEN}定时任务清理完成${NC}"
+            echo -e "${GREEN}Cron jobs cleaned${NC}"
+        else
+            echo -e "${GREEN}未发现相关定时任务${NC}"
+            echo -e "${GREEN}No related cron jobs found${NC}"
+        fi
     fi
 
     # 步骤3: 停止并禁用所有nezha-agent服务（精确匹配）
@@ -438,7 +530,7 @@ cleanup_agent() {
         echo -e "${RED}[Error] Failed to create temporary file, check /tmp permissions${NC}"
         exit 1
     }
-    trap 'rm -f "$temp_file"' EXIT
+    register_temp_file "$temp_file"
 
     find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
         \( -path /var/lib/docker -prune \) -o \
@@ -487,10 +579,10 @@ cleanup_agent() {
             [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
         done < <(docker ps -a --filter "name=*nezha-agent*" --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null)
 
-        # 方法2: grep 补充匹配 — 镜像名含 nezha-agent 或 nezha: 的容器
+        # 方法2: grep 补充匹配 — 镜像名含 nezha-agent 的容器
         while IFS="$TAB_CHAR" read -r cid cname cimage; do
             [[ -n "$cid" ]] && nezha_container_map["$cid"]="${cname}|${cimage}"
-        done < <(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent|nezha:")
+        done < <(docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}" 2>/dev/null | grep -iE "nezha-agent")
 
         if [ ${#nezha_container_map[@]} -gt 0 ]; then
             echo -e "${YELLOW}发现以下相关Docker容器:${NC}"
@@ -642,7 +734,10 @@ cleanup_dashboard() {
                 fi
                 echo -e "${CYAN}  → 追踪到: $proc_path${NC}"
             fi
-        done < <(pgrep -f "[n]ezha-dashboard" | xargs -I {} readlink -f /proc/{}/exe 2>/dev/null | sort -u)
+        done < <(pgrep -f "[n]ezha-dashboard" 2>/dev/null | while read -r _pid; do
+            [ -d "/proc/$_pid" ] || continue
+            readlink -f "/proc/$_pid/exe" 2>/dev/null
+        done | sort -u)
     fi
 
     # 追踪systemd服务中的Dashboard相关配置
@@ -653,7 +748,7 @@ cleanup_dashboard() {
         # Dashboard 专用匹配：*nezha-dashboard* 和 *nezha.service*（排除 *nezha-agent*）
         while IFS= read -r service_file; do
             if [ -f "$service_file" ]; then
-                exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+]*//' | awk '{print $1}')
+                exec_start=$(grep -E "^ExecStart=" "$service_file" | sed 's/^ExecStart=[-@!+:]*//' | awk '{print $1}')
                 if [ -n "$exec_start" ] && [ -f "$exec_start" ]; then
                     real_path=$(realpath "$exec_start" 2>/dev/null || readlink -f "$exec_start" 2>/dev/null)
                     if [ -n "$real_path" ]; then
@@ -699,20 +794,31 @@ cleanup_dashboard() {
     # D3: 检查/移除定时任务
     echo -e "\n${BLUE}[步骤D3] 检查Dashboard相关定时任务...${NC}"
     echo -e "${BLUE}[Step D3] Checking Dashboard-related cron jobs...${NC}"
-    cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-dashboard|/nezha/dashboard" || echo "No crontab found")
-    if [ "$cron_result" != "No crontab found" ]; then
-        echo -e "${YELLOW}发现Dashboard相关定时任务:${NC}"
-        echo -e "${YELLOW}Found Dashboard-related cron jobs:${NC}"
-        echo "$cron_result"
-
-        echo -e "${YELLOW}正在移除Dashboard相关定时任务...${NC}"
-        echo -e "${YELLOW}Removing Dashboard-related cron jobs...${NC}"
-        crontab -l 2>/dev/null | grep -v -iE "nezha-dashboard|/nezha/dashboard" | crontab -
-        echo -e "${GREEN}定时任务清理完成${NC}"
-        echo -e "${GREEN}Cron jobs cleaned${NC}"
+    if ! command -v crontab &>/dev/null; then
+        echo -e "${GREEN}系统无 crontab 命令，跳过定时任务检查${NC}"
+        echo -e "${GREEN}No crontab command available, skipping cron check${NC}"
     else
-        echo -e "${GREEN}未发现Dashboard相关定时任务${NC}"
-        echo -e "${GREEN}No Dashboard-related cron jobs found${NC}"
+        cron_result=$(crontab -l 2>/dev/null | grep -iE "nezha-dashboard|/nezha/dashboard" || echo "No crontab found")
+        if [ "$cron_result" != "No crontab found" ]; then
+            echo -e "${YELLOW}发现Dashboard相关定时任务:${NC}"
+            echo -e "${YELLOW}Found Dashboard-related cron jobs:${NC}"
+            echo "$cron_result"
+
+            echo -e "${YELLOW}正在移除Dashboard相关定时任务...${NC}"
+            echo -e "${YELLOW}Removing Dashboard-related cron jobs...${NC}"
+            local filtered
+            filtered=$(crontab -l 2>/dev/null | grep -v -iE "nezha-dashboard|/nezha/dashboard")
+            if [ -z "$filtered" ]; then
+                crontab -r 2>/dev/null
+            else
+                echo "$filtered" | crontab -
+            fi
+            echo -e "${GREEN}定时任务清理完成${NC}"
+            echo -e "${GREEN}Cron jobs cleaned${NC}"
+        else
+            echo -e "${GREEN}未发现Dashboard相关定时任务${NC}"
+            echo -e "${GREEN}No Dashboard-related cron jobs found${NC}"
+        fi
     fi
 
     # D4: 停止并禁用Dashboard服务
@@ -839,7 +945,7 @@ cleanup_dashboard() {
         echo -e "${RED}[Error] Failed to create temporary file, check /tmp permissions${NC}"
         exit 1
     }
-    trap 'rm -f "$temp_file"' EXIT
+    register_temp_file "$temp_file"
 
     find /root /home /tmp /var/tmp /var/log /var/lib /etc /usr/local /opt /data /www \
         \( -path /var/lib/docker -prune \) -o \
@@ -1064,8 +1170,8 @@ echo -e "\n${BLUE}==============================================================
 echo -e "${GREEN}           哪吒探针清理完成!                                     ${NC}"
 echo -e "${GREEN}           Nezha cleanup complete!                               ${NC}"
 echo -e "${BLUE}=================================================================${NC}"
-echo -e "${CYAN}v2.1: 安全增强 — Agent + Dashboard 安全清理${NC}"
-echo -e "${CYAN}v2.1: Safety Enhanced — Agent + Dashboard safe uninstall${NC}"
+echo -e "${CYAN}v2.2: 统计+修复 — Usage Counter + Bug Fixes${NC}"
+echo -e "${CYAN}v2.2: Usage Counter + Bug Fixes — Agent + Dashboard safe uninstall${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 echo -e "${YELLOW}如果您在清理后仍然遇到问题，可能需要考虑系统重启。${NC}"
 echo -e "${YELLOW}If issues persist after cleanup, consider restarting your system.${NC}"
