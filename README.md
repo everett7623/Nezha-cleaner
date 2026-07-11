@@ -25,7 +25,7 @@
 **Added usage statistics counter + 7 bug fixes!**
 
 **v2.2 更新内容 (What's New):**
-- 📊 **使用统计计数器**: 主菜单显示累计运行次数 (visitor-badge.laobi.icu)
+- 📊 **可选使用统计计数器**: 设置 `NEZHA_CLEANER_USAGE_STATS=1` 后在主菜单显示累计运行次数；默认不访问第三方统计服务
 - 🐛 **Bug修复**: trap覆盖、符号链接保护、ExecStart前缀、crontab边界、竞态条件、Docker匹配
 
 ### 📋 v2.1 安全增强版
@@ -198,7 +198,7 @@ sudo ./nezha-agent-cleaner.sh
 ## 🔄 版本历史 (Version History)
 
 ### v2.2 (2026-06) - 📊 统计+修复版 (Latest)
-- 📊 **新增**: 使用统计计数器 — 主菜单显示累计运行次数 (visitor-badge.laobi.icu)
+- 📊 **新增**: 可选使用统计计数器 — 设置 `NEZHA_CLEANER_USAGE_STATS=1` 后显示累计运行次数，默认不联网统计
 - 🐛 **修复**: trap覆盖 — Both模式下临时文件不再泄漏（全局数组追踪）
 - 🐛 **修复**: 符号链接保护 — `safe_remove()` 检测指向保护目录的 symlink
 - 🐛 **修复**: ExecStart前缀 — 扩展剥离字符类支持 `:` 修饰符
@@ -281,7 +281,7 @@ sudo ./nezha-agent-cleaner.sh
 | Docker 镜像删除 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | 容器归属分类 (Agent/Dashboard) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | 交互式主菜单 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| 使用统计计数器 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **visitor-badge** |
+| 使用统计计数器 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **可选启用** |
 | 推荐使用 | ❌ | ⚠️ 可用 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ **强烈推荐** |
 
 ---

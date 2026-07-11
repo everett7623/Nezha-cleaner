@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-A single-file Bash script (`nezha-agent-cleaner.sh`) that safely removes Nezha monitoring components from Linux systems. v2.1 provides an interactive menu to choose between uninstalling the Agent (被控端), Dashboard (主控端), or both — each with its own dedicated 12-step safety pipeline.
+A single-file Bash script (`nezha-agent-cleaner.sh`) that safely removes Nezha monitoring components from Linux systems. v2.2 provides an interactive menu to choose between uninstalling the Agent (被控端), Dashboard (主控端), or both — each with its own dedicated 12-step safety pipeline. Usage statistics are opt-in via `NEZHA_CLEANER_USAGE_STATS=1`.
 
 - **Target platform:** Linux with systemd (Ubuntu, Debian, CentOS, Fedora, Arch)
 - **Runtime requirement:** Must run as root (`id -u` check near the top)
@@ -15,7 +15,7 @@ A single-file Bash script (`nezha-agent-cleaner.sh`) that safely removes Nezha m
 
 > **Note on line numbers:** Line number references throughout this document are approximate and will drift as the script evolves. Use them as navigation hints, not absolute truth. Grep for the relevant pattern if the line has moved.
 
-## Script architecture (v2.1)
+## Script architecture (v2.2)
 
 ### Top-level flow
 
@@ -67,7 +67,7 @@ New 12-step pipeline mirroring the Agent flow but targeting Dashboard-specific p
 | D11 | `systemctl daemon-reload` | Reload after unit changes |
 | D12 | Final verification | Reports remaining Dashboard processes, services, Docker containers, files |
 
-### Docker container归属 (v2.1)
+### Docker container归属 (v2.2)
 
 Each mode only touches its own containers:
 
@@ -99,20 +99,20 @@ Classification uses lowercased container name matching before `docker inspect` v
 - **`is_protected_dir()`**: Resolves symlinks via `realpath` (falling back to `readlink -f`, then raw path) before comparing against PROTECTED_DIRS. Uses prefix matching (`$protected/*`) so subdirectories of protected dirs are also guarded.
 - **Exact name matching:** All grep/find patterns use `nezha` rather than generic `agent` to avoid false positives on ssh-agent, 1panel-agent, tailscale-agent, etc. Dashboard mode additionally distinguishes `nezha-dashboard` from `nezha-agent` in service/container matching.
 - **Interactive confirmation:** Steps D9 (find scan) and D10 (containers + images) require user `[y/N]` confirmation before destructive actions. All interactive reads use `</dev/tty` redirection so they work when piped via `curl | bash`.
-- **Docker defense-in-depth (v2.1):** Dashboard step D10 uses four layers:
+- **Docker defense-in-depth (v2.2):** Dashboard step D10 uses four layers:
   1. Docker native `--filter "name=*nezha*"` for broad container-name matching
   2. Classification: lowercased container name checked — `*nezha-agent*` containers are skipped, all others proceed
   3. `docker inspect` per-container verification — containers failing verification are skipped with a warning
   4. **Image removal with separate confirmation** — after containers are cleaned, lists `docker images | grep -iE "nezha"` and requires a **second** `[y/N]` confirmation before `docker rmi`
 - **Docker storage exclusion:** Global `find` scans (step 7 and D9) prune `/var/lib/docker` and `/var/lib/containerd` to prevent accidental traversal of container runtime internals.
-- **Media/document file protection (v2.1):** `safe_remove()` skips individual files with common media/document extensions (`.png`, `.jpg`, `.gif`, `.svg`, `.webp`, `.bmp`, `.ico`, `.heic`, `.heif`, `.pdf`, `.doc`, `.docx`, `.md`, `.txt`, `.rst`, `.html`, `.htm`, `.rtf`, `.mp4`, `.mp3`, `.avi`, `.mov`, `.mkv`, `.wav`, `.flac`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.csv`). These file types are never part of Nezha monitoring software (which consists of binaries without extensions, `.service`, `.json`, `.yaml`, `.sh`, `.conf`). This prevents the catastrophic deletion of user content like blog post illustrations (`nezha-architecture.png`) or articles (`nezha-guide.md`) that happen to have "nezha" in the filename. **Do not weaken this guard** — if a new extension needs to be added to the allow-list (i.e., a file type that COULD be a Nezha component), add it explicitly to the case statement rather than removing the guard.
+- **Media/document file protection (v2.2):** `safe_remove()` skips individual files with common media/document extensions (`.png`, `.jpg`, `.gif`, `.svg`, `.webp`, `.bmp`, `.ico`, `.heic`, `.heif`, `.pdf`, `.doc`, `.docx`, `.md`, `.txt`, `.rst`, `.html`, `.htm`, `.rtf`, `.mp4`, `.mp3`, `.avi`, `.mov`, `.mkv`, `.wav`, `.flac`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.csv`). These file types are never part of Nezha monitoring software (which consists of binaries without extensions, `.service`, `.json`, `.yaml`, `.sh`, `.conf`). This prevents the catastrophic deletion of user content like blog post illustrations (`nezha-architecture.png`) or articles (`nezha-guide.md`) that happen to have "nezha" in the filename. **Do not weaken this guard** — if a new extension needs to be added to the allow-list (i.e., a file type that COULD be a Nezha component), add it explicitly to the case statement rather than removing the guard.
 
 ## Version management
 
 The version string appears in four places that must stay in sync:
-1. Header comment: `# Version: 2.1 (Safety Enhanced)`
-2. Welcome banner echoes: `v2.1 (安全增强)` / `v2.1 (Safety Enhanced)`
-3. Closing banner echoes: `v2.1: 安全增强` / `v2.1: Safety Enhanced`
+1. Header comment: `# Version: 2.2 (Usage Counter + Bug Fixes)`
+2. Welcome banner echoes: `v2.2 (统计+修复)` / `v2.2 (Usage Counter + Bug Fixes)`
+3. Closing banner echoes: `v2.2: 统计+修复` / `v2.2: Usage Counter + Bug Fixes`
 4. README.md version badges and changelog
 
 ## Implementation patterns
@@ -121,8 +121,8 @@ The version string appears in four places that must stay in sync:
   - **File-type guard:** Individual files with known media/document extensions (`.png`, `.jpg`, `.gif`, `.svg`, `.pdf`, `.md`, `.txt`, `.mp4`, etc.) are skipped — even if their name contains "nezha". This prevents deleting user content like article illustrations (`nezha.png`) that have nothing to do with Nezha monitoring software. Nezha components are binaries, configs (`.json`/`.yaml`/`.service`), and shell scripts — never images or documents.
 - **`[n]ezha-agent` / `[n]ezha-dashboard` bracket trick**: All `pgrep`, `pkill`, `grep -E` targeting nezha processes must use `[n]ezha-...` not `nezha-...`, so the pattern matches the real process but NOT the script's own filename (`nezha-agent-cleaner.sh`). `SCRIPT_PID=$$` is **unused** — the bracket trick is what actually prevents self-matching.
 - **`</dev/tty` on interactive reads**: All `read -r` for user confirmation must redirect from `/dev/tty` so confirmation works when the script is piped via `curl | bash`. This includes the main menu and all step-level confirmations.
-- **ExecStart prefix stripping**: `sed 's/^ExecStart=[-@!+]*//'` strips systemd prefix modifiers (`-`, `@`, `+`, `!`) before extracting the binary path.
-- **`trap 'rm -f "$temp_file"' EXIT`**: Registered after `mktemp` in global find steps. Ensures temp file cleanup on SIGINT/SIGTERM/normal exit.
+- **ExecStart prefix stripping**: `sed 's/^ExecStart=[-@!+:]*//'` strips systemd prefix modifiers (`-`, `@`, `+`, `!`, `:`) before extracting the binary path.
+- **Global temporary-file trap**: Each `mktemp` result is registered with `register_temp_file()`. A single `EXIT` trap removes every registered file, including when Both mode runs both cleanup functions.
 - **Local arrays in functions**: Both `cleanup_agent()` and `cleanup_dashboard()` declare `local -a TRACKED_PATHS` and `local -A unique_paths` so the two modes are fully isolated — Both mode runs them sequentially without variable collision.
 - **Container classification (Dashboard mode)**: Before displaying found containers, D10 iterates the collected map and removes entries whose lowercased name contains `nezha-agent`. This is done with `unset 'dashboard_container_map[$cid]'` on the associative array.
 

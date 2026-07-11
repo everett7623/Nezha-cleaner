@@ -13,7 +13,7 @@
 #                   interactive menu.
 #
 #      Changelog v2.2:
-#      - Added: 使用统计计数器 — 主菜单显示累计运行次数 (visitor-badge.laobi.icu)
+#      - Added: 可选使用统计计数器 — 仅在用户显式启用时请求第三方服务
 #      - Fixed: trap覆盖 — Both模式下临时文件不再泄漏 (全局数组追踪)
 #      - Fixed: 符号链接保护 — safe_remove()检测指向保护目录的symlink
 #      - Fixed: ExecStart前缀 — 扩展剥离字符类支持 ':' 修饰符
@@ -93,10 +93,9 @@ fetch_usage_stats() {
         return 1
     fi
 
-    # 解析 SVG 中的计数文本
-    # visitor-badge.laobi.icu SVG 中计数以纯数字形式出现在最后一个 <text> 节点
+    # 只解析 <text> 节点中的纯数字内容，避免误取 SVG 的宽高或坐标值
     local count_text
-    count_text=$(echo "$response" | grep -oE '[0-9]+' | sort -n | tail -1)
+    count_text=$(printf '%s\n' "$response" | grep -oE '>[0-9]+</text>' | tail -1 | grep -oE '[0-9]+')
     if [ -z "$count_text" ]; then
         return 1
     fi
@@ -128,8 +127,10 @@ if [ "$(id -u)" != "0" ]; then
    exit 1
 fi
 
-# 获取使用统计（静默，≤3秒超时）
-fetch_usage_stats
+# 使用统计默认关闭，避免清理脚本在未告知用户时访问第三方服务
+if [ "${NEZHA_CLEANER_USAGE_STATS:-0}" = "1" ]; then
+    fetch_usage_stats
+fi
 
 # ==============================================================================
 #  主菜单 — 选择清理模式
@@ -997,7 +998,8 @@ cleanup_dashboard() {
         for cid in "${!dashboard_container_map[@]}"; do
             IFS='|' read -r cname cimage <<< "${dashboard_container_map[$cid]}"
             local cname_lower="${cname,,}"
-            if [[ "$cname_lower" == *nezha-agent* ]]; then
+            local cimage_lower="${cimage,,}"
+            if [[ "$cname_lower" == *nezha-agent* ]] || [[ "$cimage_lower" == *nezha-agent* ]]; then
                 echo -e "${CYAN}  → 跳过Agent容器: $cname (Dashboard模式不处理Agent)${NC}"
                 echo -e "${CYAN}  → Skipping Agent container: $cname (not handled in Dashboard mode)${NC}"
                 unset 'dashboard_container_map[$cid]'
@@ -1024,7 +1026,10 @@ cleanup_dashboard() {
                     verify_name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
                     verify_image=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
-                    if [[ "$verify_name" == *nezha* ]] || [[ "$verify_image" == *nezha* ]]; then
+                    if [[ "$verify_name" == *nezha-agent* ]] || [[ "$verify_image" == *nezha-agent* ]]; then
+                        echo -e "${RED}⚠️  容器 $cid ($cname) 经验证属于 Agent，跳过删除${NC}"
+                        echo -e "${RED}⚠️  Container $cid ($cname) verified as Agent, skipping${NC}"
+                    elif [[ "$verify_name" == *nezha* ]] || [[ "$verify_image" == *nezha* ]]; then
                         echo -e "${YELLOW}停止并删除容器: $cid ($cname) [镜像: $cimage]${NC}"
                         echo -e "${YELLOW}Stopping and removing container: $cid ($cname) [Image: $cimage]${NC}"
                         docker stop "$cid" 2>/dev/null
@@ -1038,7 +1043,7 @@ cleanup_dashboard() {
                 echo -e "${GREEN}Dashboard containers cleaned${NC}"
 
                 # === 第4层: 镜像删除（二次确认） ===
-                nezha_images=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null | grep -iE "nezha")
+                nezha_images=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null | grep -iE "nezha" | grep -viE "nezha-agent")
                 if [ -n "$nezha_images" ]; then
                     echo -e "\n${YELLOW}发现以下哪吒相关Docker镜像:${NC}"
                     echo -e "${YELLOW}Found the following Nezha Docker images:${NC}"
